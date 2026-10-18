@@ -87,7 +87,7 @@ Frontend (from `frontend/`): `npm run lint`. There is no frontend test suite.
 - Conflict detection between email and PDF with both values and evidence kept and no source preference.
 - Rules R1-R5 and overall status as in `rules.json`, each shown with its status, reason and the values or evidence used; conflicts and invalid values give UNKNOWN before any threshold test.
 - Labelled human overrides with the original value and evidence retained; rules rerun and a snapshot history is kept.
-- AI underwriter summary and editable draft broker email (marked stale after an override when edited).
+- AI underwriter summary and editable draft broker email (regenerated only on request; overrides re-run the rules but not the narrative agent).
 - Model failures shown as states, never replaced by simulated output.
 - Submission text is treated as data, never as instructions.
 
@@ -103,7 +103,7 @@ Not required by the brief; the required flow works without them.
 
 GitHub Copilot agent mode in VS Code (Claude model) with the Superpowers planning, review and test-driven-development skills, used to plan, implement, review and test. All code was reviewed and run by the author.
 
-Approximate time spent: 4-5 hours over the course of one day.
+Approximate time spent: about 6 hours over the course of one day.
 
 ## Known limitations and assumptions
 
