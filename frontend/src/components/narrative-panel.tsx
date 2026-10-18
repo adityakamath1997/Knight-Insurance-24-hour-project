@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { regenerateNarrative, saveDraft, sendMessage } from "@/lib/api";
+import { regenerateNarrative, saveDraft } from "@/lib/api";
 import type { SubmissionDetail } from "@/lib/types";
 
 export function NarrativePanel({
@@ -14,8 +14,7 @@ export function NarrativePanel({
   const { narrative } = detail;
   const [draft, setDraft] = useState(narrative.draft.body);
   const [syncedBody, setSyncedBody] = useState(narrative.draft.body);
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState<"save" | "regenerate" | "message" | null>(null);
+  const [busy, setBusy] = useState<"save" | "regenerate" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const unsaved = draft !== narrative.draft.body;
@@ -26,14 +25,13 @@ export function NarrativePanel({
     setDraft(narrative.draft.body);
   }
 
-  async function run(kind: "save" | "regenerate" | "message", action: () => Promise<SubmissionDetail>) {
+  async function run(kind: "save" | "regenerate", action: () => Promise<SubmissionDetail>) {
     setError(null);
     setSaved(false);
     setBusy(kind);
     try {
       onUpdate(await action());
       if (kind === "save") setSaved(true);
-      if (kind === "message") setMessage("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Request failed.");
     } finally {
@@ -106,42 +104,6 @@ export function NarrativePanel({
             <span className="text-xs text-slate-500">Edited by reviewer</span>
           )}
         </div>
-      </div>
-
-      <div className="card flex flex-col gap-3">
-        <h3 className="font-medium">Ask about this submission</h3>
-        {narrative.messages.length > 0 && (
-          <ul className="flex flex-col gap-2">
-            {narrative.messages.map((item, index) => (
-              <li
-                key={index}
-                className={`rounded-xl p-3 text-sm ${
-                  item.role === "reviewer" ? "ml-8 bg-indigo-50" : "mr-8 bg-slate-100"
-                }`}
-              >
-                <div className="mb-0.5 text-xs font-semibold uppercase text-slate-500">{item.role}</div>
-                <div className="whitespace-pre-wrap">{item.content}</div>
-              </li>
-            ))}
-          </ul>
-        )}
-        <form
-          className="flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (message.trim()) run("message", () => sendMessage(detail.id, message));
-          }}
-        >
-          <input
-            className="input"
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
-            placeholder="Ask a question…"
-          />
-          <button className="btn-primary" disabled={busy !== null || !message.trim()}>
-            {busy === "message" ? "Sending…" : "Ask"}
-          </button>
-        </form>
       </div>
 
       {error && <p className="text-sm text-red-700">{error}</p>}

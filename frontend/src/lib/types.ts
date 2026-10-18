@@ -75,18 +75,11 @@ export interface SourceRunSummary {
   error: string | null;
 }
 
-export interface Message {
-  role: "reviewer" | "assistant";
-  content: string;
-  created_at: string;
-}
-
 export interface Narrative {
   status: "SUCCEEDED" | "FAILED" | "NOT_RUN";
   error: string | null;
   summary: string | null;
   draft: { body: string; edited: boolean; stale: boolean };
-  messages: Message[];
 }
 
 export interface SubmissionDetail {

@@ -127,7 +127,3 @@ export function saveDraft(id: string, body: string) {
 export function regenerateNarrative(id: string) {
   return request(`/submissions/${id}/narrative/regenerate`, { method: "POST" });
 }
-
-export function sendMessage(id: string, message: string) {
-  return request(`/submissions/${id}/narrative/messages`, json("POST", { message }));
-}
