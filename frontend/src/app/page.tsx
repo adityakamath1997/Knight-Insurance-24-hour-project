@@ -1,10 +1,13 @@
 "use client";
 
-import { Fragment, useState } from "react";
-import { createSubmission } from "@/lib/api";
-import type { SubmissionDetail } from "@/lib/types";
+import { Fragment, useRef, useState } from "react";
+import { getSubmission, streamSubmission } from "@/lib/api";
+import type { ProgressEvent, SubmissionDetail } from "@/lib/types";
+import { ActivityPanel } from "@/components/activity-panel";
 import { FieldReview } from "@/components/field-review";
+import { HistoryPanel } from "@/components/history-panel";
 import { NarrativePanel } from "@/components/narrative-panel";
+import { ProgressFeed } from "@/components/progress-feed";
 import { RuleResults } from "@/components/rule-results";
 import { SubmissionForm } from "@/components/submission-form";
 
@@ -75,24 +78,63 @@ export default function Home() {
   const [detail, setDetail] = useState<SubmissionDetail | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [events, setEvents] = useState<ProgressEvent[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  // Only the latest history click may apply, so a slow earlier load cannot replace it.
+  const selection = useRef(0);
 
   async function submit(emailText: string, files: File[]) {
     // Drop all prior applicant data before the new packet starts.
+    selection.current += 1;
     setDetail(null);
     setError(null);
+    setEvents([]);
     setPhase("processing");
     try {
-      setDetail(await createSubmission(emailText, files));
+      setDetail(
+        await streamSubmission(emailText, files, (event) =>
+          setEvents((current) => [...current, event]),
+        ),
+      );
       setPhase("done");
+      setRefreshKey((key) => key + 1);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Submission failed.");
       setPhase("error");
     }
   }
 
+  async function select(id: string) {
+    if (phase === "processing") return; // a running review owns the page until it ends
+    const ticket = ++selection.current;
+    try {
+      const loaded = await getSubmission(id);
+      if (ticket !== selection.current) return;
+      setEvents([]);
+      setError(null);
+      setDetail(loaded);
+      setPhase("done");
+      setHistoryOpen(false);
+    } catch (caught) {
+      if (ticket !== selection.current) return;
+      setDetail(null);
+      setError(caught instanceof Error ? caught.message : "Could not load submission.");
+      setPhase("error");
+    }
+  }
+
+  // Overrides and narrative edits can change the status shown in history.
+  function update(next: SubmissionDetail) {
+    setDetail(next);
+    setRefreshKey((key) => key + 1);
+  }
+
   function reset() {
+    selection.current += 1;
     setDetail(null);
     setError(null);
+    setEvents([]);
     setPhase("idle");
   }
 
@@ -104,27 +146,37 @@ export default function Home() {
             <h1 className="text-lg font-semibold tracking-tight">Submission Review</h1>
             <p className="text-xs text-slate-500">Commercial auto · underwriter workspace</p>
           </div>
-          {detail && (
-            <button className="btn" onClick={reset}>
-              New packet
+          <div className="flex gap-2">
+            <button
+              className="btn lg:hidden"
+              aria-expanded={historyOpen}
+              onClick={() => setHistoryOpen((open) => !open)}
+            >
+              History
             </button>
-          )}
+            {(detail || phase === "error") && (
+              <button className="btn" onClick={reset}>
+                New packet
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6">
+      <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <div className={historyOpen ? "block" : "hidden lg:block"}>
+        <HistoryPanel selectedId={detail?.id ?? null} refreshKey={refreshKey} onSelect={select} />
+      </div>
+      <main className="flex min-w-0 flex-col gap-6">
         {!detail && <SubmissionForm busy={phase === "processing"} onSubmit={submit} />}
 
         {phase === "idle" && (
           <p className="text-center text-sm text-slate-500">Add a broker email and/or packet files to begin.</p>
         )}
 
-        {phase === "processing" && (
-          <div className="card flex items-center gap-3" role="status">
-            <span className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
-            <span className="text-sm">Reading the packet and extracting fields. This can take a minute.</span>
-          </div>
-        )}
+        {phase === "processing" && <ProgressFeed events={events} />}
+
+        <ActivityPanel events={events} running={phase === "processing"} />
 
         {phase === "error" && error && (
           <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900" role="alert">
@@ -137,11 +189,12 @@ export default function Home() {
           <Fragment key={detail.id}>
             <RuleResults detail={detail} />
             <PacketSummary detail={detail} />
-            <FieldReview detail={detail} onUpdate={setDetail} />
-            <NarrativePanel detail={detail} onUpdate={setDetail} />
+            <FieldReview detail={detail} onUpdate={update} />
+            <NarrativePanel detail={detail} onUpdate={update} />
           </Fragment>
         )}
       </main>
+      </div>
     </div>
   );
 }

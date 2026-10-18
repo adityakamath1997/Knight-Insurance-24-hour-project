@@ -99,3 +99,34 @@ export interface SubmissionDetail {
   overall_status: OverallStatus;
   narrative: Narrative;
 }
+
+export type ProgressStage = "prepare" | "extraction" | "rules" | "narrative";
+export type ProgressKind =
+  | "stage_started"
+  | "stage_finished"
+  | "agent_message"
+  | "tool_call"
+  | "tool_result";
+export type SourceName = "email" | "pdf" | "attachments";
+
+export interface ProgressEvent {
+  kind: ProgressKind;
+  stage: ProgressStage;
+  source: SourceName | null;
+  label: string;
+  status: string | null;
+  tool: string | null;
+  detail: string | null;
+  truncated: boolean;
+}
+
+export interface SubmissionListItem {
+  id: string;
+  created_at: string;
+  business_name: string | null;
+  overall_status: OverallStatus;
+  document_count: number;
+}
+
+export type SortField = "created_at" | "id" | "status" | "business_name";
+export type SortOrder = "asc" | "desc";
