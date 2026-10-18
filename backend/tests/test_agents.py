@@ -80,6 +80,12 @@ class FakeAgent:
     async def ainvoke(self, state: dict) -> dict:
         return self.invoke(state)
 
+    async def astream(self, state: dict, stream_mode: str = "values"):
+        yield self.invoke(state)
+
+    def stream(self, state: dict, stream_mode: str = "values"):
+        yield self.invoke(state)
+
 
 def builder(agents: dict):
     return lambda source, schema: agents[source]
@@ -513,7 +519,9 @@ class FakeWriter:
         self.outputs = list(outputs)
         self.calls: list[tuple[dict, list, str]] = []
 
-    def __call__(self, report: dict, history: list, draft: str) -> NarrativeOutput:
+    def __call__(
+        self, report: dict, history: list, draft: str, progress=None
+    ) -> NarrativeOutput:
         self.calls.append((report, list(history), draft))
         output = self.outputs.pop(0)
         if isinstance(output, Exception):
@@ -692,3 +700,161 @@ def test_regenerate_after_chat_ends_with_a_user_turn(tmp_path: Path) -> None:
     narrative.generate(submission_id)
 
     assert {m["role"] for m in [agent.calls[-1]["messages"][-1]]} == {"user"}
+
+
+def source_events(events: list, source: str) -> list[tuple[str, str, str | None]]:
+    return [(e.kind, e.label, e.status) for e in events if e.source == source]
+
+
+def test_runner_emits_tool_events_from_the_agent_stream() -> None:
+    packet = prepare_submission_documents("Secret broker text", [])
+    model = ScriptedModel(
+        messages=iter(
+            [
+                AIMessage(
+                    "",
+                    tool_calls=[
+                        tool_call(
+                            "read_file", file_path="/submission/pasted broker email"
+                        )
+                    ],
+                ),
+                AIMessage(
+                    "", tool_calls=[tool_call("SourceExtractionResult", fields=[])]
+                ),
+            ]
+        )
+    )
+    events: list = []
+    runner = BoundedExtractionRunner(
+        lambda source, schema: build_agent([model], "/submission", "prompt", schema)
+    )
+
+    runs = runner(packet, events.append)
+
+    assert runs[0].status == "SUCCEEDED"
+    assert source_events(events, "email") == [
+        ("stage_started", "Email extraction started", None),
+        ("tool_call", "Reading pasted broker email", None),
+        ("tool_result", "Read ok", "ok"),
+        ("tool_call", "Submitting answer", None),
+        ("tool_result", "Answer accepted", "ok"),
+        ("stage_finished", "Email extraction finished", "SUCCEEDED"),
+    ]
+    assert any(
+        e.kind == "tool_result" and "Secret broker text" in (e.detail or "")
+        for e in events
+    )
+    [submit] = [e for e in events if e.label == "Submitting answer"]
+    assert (submit.tool, json.loads(submit.detail or "")) == (
+        "SourceExtractionResult",
+        {"fields": []},
+    )
+
+
+def test_narrative_writer_emits_model_text_and_tool_events_but_not_the_input() -> None:
+    model = ScriptedModel(
+        messages=iter(
+            [
+                AIMessage(
+                    "Reading the report first.",
+                    tool_calls=[
+                        tool_call("read_file", file_path="/review/report.json")
+                    ],
+                ),
+                AIMessage(
+                    "",
+                    tool_calls=[
+                        tool_call(
+                            "NarrativeOutput", summary="S", draft_email="D", reply=""
+                        )
+                    ],
+                ),
+            ]
+        )
+    )
+    agent = build_agent([model], "/review", "prompt", NarrativeOutput)
+    events: list = []
+
+    result = AgentNarrativeWriter(agent)(
+        {"overall_status": "READY"},
+        [("reviewer", "Earlier question"), ("assistant", "Earlier answer")],
+        "",
+        events.append,
+    )
+
+    assert (result.summary, result.draft_email) == ("S", "D")
+    assert [(e.kind, e.label, e.stage, e.source) for e in events] == [
+        ("agent_message", "Model message", "narrative", None),
+        ("tool_call", "Reading report.json", "narrative", None),
+        ("tool_result", "Read ok", "narrative", None),
+        ("tool_call", "Submitting answer", "narrative", None),
+        ("tool_result", "Answer accepted", "narrative", None),
+    ]
+    assert events[0].detail == "Reading the report first."
+    assert "READY" in (events[2].detail or "")
+    assert all("Earlier answer" not in (e.detail or "") for e in events)
+
+
+def test_long_tool_output_is_clipped_and_flagged() -> None:
+    from langchain_core.messages import ToolMessage
+
+    from app.agents.events import MAX_DETAIL_CHARS, message_events
+
+    message = ToolMessage(
+        "x" * (MAX_DETAIL_CHARS + 5), tool_call_id="1", name="read_file"
+    )
+    [event] = message_events(message, "extraction", "pdf", "Answer")
+    assert len(event.detail or "") == MAX_DETAIL_CHARS and event.truncated
+
+
+def test_skipped_source_reports_finished() -> None:
+    packet = prepare_submission_documents("Broker email", [upload("scan.pdf", b"x")])
+    agents = {
+        "email": FakeAgent(EMAIL_RESULT),
+        "pdf": FakeAgent(),
+        "attachments": FakeAgent(),
+    }
+    events: list = []
+
+    BoundedExtractionRunner(builder(agents))(packet, events.append)
+
+    assert source_events(events, "pdf")[-1] == (
+        "stage_finished",
+        "PDF extraction skipped",
+        "SKIPPED",
+    )
+
+
+def test_model_failure_is_reported_as_failed_stage() -> None:
+    agents = {
+        "email": FakeAgent(RuntimeError("boom")),
+        "pdf": FakeAgent(),
+        "attachments": FakeAgent(),
+    }
+    events: list = []
+
+    BoundedExtractionRunner(builder(agents))(
+        prepare_submission_documents("Broker email", []), events.append
+    )
+
+    finished = source_events(events, "email")[-1]
+    assert finished == (
+        "stage_finished",
+        "Email extraction failed",
+        "MODEL_FAILED",
+    )
+    assert [e.detail for e in events if e.label == "Email extraction failed"] == [
+        "boom"
+    ]
+
+
+def test_pdf_reads_are_labelled_with_the_original_file_name() -> None:
+    from app.agents.events import message_events
+
+    message = AIMessage(
+        "",
+        tool_calls=[tool_call("read_file", file_path="/submission/loss_runs.pdf.txt")],
+    )
+    [event] = message_events(message, "extraction", "pdf", "Answer")
+    assert event.label == "Reading loss_runs.pdf"

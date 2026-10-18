@@ -89,7 +89,7 @@ def attachment_run(packet: PreparedPacket) -> SourceRun:
     )
 
 
-def sample_extractor(packet: PreparedPacket) -> list[SourceRun]:
+def sample_extractor(packet: PreparedPacket, progress=None) -> list[SourceRun]:
     pdfs = [d for d in packet.attachments if d.kind == "pdf"]
     forms = [d for d in pdfs if "Commercial auto application" in (d.text or "")]
     return [
@@ -103,14 +103,14 @@ def sample_extractor(packet: PreparedPacket) -> list[SourceRun]:
     ]
 
 
-def failing_extractor(packet: PreparedPacket) -> list[SourceRun]:
+def failing_extractor(packet: PreparedPacket, progress=None) -> list[SourceRun]:
     return [
         SourceRun(source=source, status="MODEL_FAILED", attempts=1, error="timeout")
         for source in ("email", "pdf", "attachments")
     ]
 
 
-def writer(report: dict, history: list, draft: str) -> NarrativeOutput:
+def writer(report: dict, history: list, draft: str, progress=None) -> NarrativeOutput:
     return NarrativeOutput(
         summary=f"Status {report['overall_status']}",
         draft_email=f"Please send {len(report['items_to_request'])} items",
@@ -118,7 +118,9 @@ def writer(report: dict, history: list, draft: str) -> NarrativeOutput:
     )
 
 
-def failing_writer(report: dict, history: list, draft: str) -> NarrativeOutput:
+def failing_writer(
+    report: dict, history: list, draft: str, progress=None
+) -> NarrativeOutput:
     raise ConnectionError("model unavailable")
 
 
@@ -364,3 +366,180 @@ def test_cors_allows_only_the_frontend_origin(tmp_path: Path) -> None:
         "/submissions", headers=headers | {"Origin": "http://evil.example"}
     )
     assert "access-control-allow-origin" not in denied.headers
+
+
+def stream(api: TestClient, **kwargs) -> list[tuple[str, dict]]:
+    """POST /submissions/stream and parse the SSE body into (event, data) pairs."""
+    import json
+
+    with api.stream("POST", "/submissions/stream", **kwargs) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join(response.iter_text())
+    events = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.split("\n") if ": " in line)
+        if "event" in lines:
+            events.append((lines["event"], json.loads(lines["data"])))
+    return events
+
+
+def test_stream_reports_progress_then_one_result(tmp_path: Path) -> None:
+    api = client(tmp_path)
+    events = stream(api, files=sample_files("SUB-A"))
+
+    kinds = [name for name, _ in events]
+    assert kinds[-1] == "result"
+    assert kinds.count("result") == 1 and "error" not in kinds
+    assert set(kinds[:-1]) == {"progress"}
+    assert [d["stage"] for n, d in events[:-1] if d["kind"] == "stage_started"] == [
+        "prepare",
+        "rules",
+        "narrative",
+    ]
+    detail = events[-1][1]
+    assert api.get(f"/submissions/{detail['id']}").json() == detail
+
+
+def test_stream_forwards_events_emitted_by_the_extractor(tmp_path: Path) -> None:
+    from app.progress import ProgressEvent
+
+    def noisy(packet: PreparedPacket, progress=None) -> list[SourceRun]:
+        progress(
+            ProgressEvent(
+                kind="tool_call",
+                stage="extraction",
+                source="email",
+                label="Reading pasted broker email",
+            )
+        )
+        return sample_extractor(packet)
+
+    events = stream(client(tmp_path, noisy), files=sample_files("SUB-A"))
+
+    assert ("progress", "Reading pasted broker email") in [
+        (n, d["label"]) for n, d in events if n == "progress"
+    ]
+
+
+def test_stream_reports_invalid_packet_as_a_single_error(tmp_path: Path) -> None:
+    events = stream(client(tmp_path))
+
+    names = [name for name, _ in events]
+    assert names[-1] == "error" and names.count("error") == 1
+    assert set(names[:-1]) <= {"progress"}
+    assert isinstance(events[-1][1]["detail"], str) and events[-1][1]["detail"]
+
+
+def test_stream_ends_with_result_when_the_model_fails(tmp_path: Path) -> None:
+    events = stream(
+        client(tmp_path, failing_extractor, failing_writer),
+        data={"email_text": "Business name: X"},
+    )
+
+    assert events[-1][0] == "result"
+    assert {r["status"] for r in events[-1][1]["source_runs"]} == {"MODEL_FAILED"}
+
+
+def test_stream_forwards_agent_message_and_tool_content(tmp_path: Path) -> None:
+    from app.progress import ProgressEvent
+
+    def noisy(packet: PreparedPacket, progress=None) -> list[SourceRun]:
+        progress(
+            ProgressEvent(
+                kind="tool_result",
+                stage="extraction",
+                source="email",
+                label="Read ok",
+                tool="read_file",
+                detail="Business name: Secret Hauling Co",
+            )
+        )
+        return sample_extractor(packet)
+
+    events = stream(client(tmp_path, noisy), data={"email_text": "Hi"})
+
+    [forwarded] = [d for n, d in events if n == "progress" and d.get("tool")]
+    assert forwarded["detail"] == "Business name: Secret Hauling Co"
+    assert forwarded["truncated"] is False
+
+
+def listing(api: TestClient, **params) -> list[dict]:
+    response = api.get("/submissions", params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_list_defaults_to_newest_first_with_summary_fields(tmp_path: Path) -> None:
+    api = client(tmp_path)
+    a, b = submit(api, "SUB-A"), submit(api, "SUB-B")
+
+    items = listing(api)
+
+    assert [i["id"] for i in items] == [b["id"], a["id"]]
+    newest = items[1]
+    assert newest["business_name"] == "Pacific Harbor Delivery Example LLC"
+    assert newest["overall_status"] == "READY_FOR_REVIEW"
+    assert newest["document_count"] == len(a["documents"])
+    assert newest["created_at"] == a["created_at"]
+
+
+def test_list_sorts_by_id_and_status_and_business_name(tmp_path: Path) -> None:
+    api = client(tmp_path)
+    ids = [submit(api, name)["id"] for name in ("SUB-A", "SUB-B", "SUB-C")]
+
+    assert [i["id"] for i in listing(api, sort="id", order="asc")] == sorted(ids)
+    assert [i["id"] for i in listing(api, sort="id", order="desc")] == sorted(
+        ids, reverse=True
+    )
+    statuses = [i["overall_status"] for i in listing(api, sort="status", order="asc")]
+    assert statuses == sorted(statuses)
+    names = [
+        i["business_name"] for i in listing(api, sort="business_name", order="asc")
+    ]
+    assert names == sorted(names, key=str.lower)
+    assert listing(api, sort="created_at", order="asc")[0]["id"] == ids[0]
+
+
+def test_list_filters_by_id_or_business_name_literally(tmp_path: Path) -> None:
+    api = client(tmp_path)
+    a = submit(api, "SUB-A")
+    submit(api, "SUB-B")
+
+    assert [i["id"] for i in listing(api, q=a["id"][:8])] == [a["id"]]
+    assert [i["id"] for i in listing(api, q="pacific harbor")] == [a["id"]]
+    assert listing(api, q="%") == []
+    assert listing(api, q="_") == []
+    assert len(listing(api, limit=1)) == 1
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"sort": "nope"}, {"order": "sideways"}, {"limit": 0}, {"limit": 201}],
+)
+def test_list_rejects_invalid_parameters(tmp_path: Path, params: dict) -> None:
+    assert client(tmp_path).get("/submissions", params=params).status_code == 422
+
+
+def test_list_skips_submissions_without_a_snapshot(tmp_path: Path) -> None:
+    from app.persistence.database import create_db_engine
+    from app.persistence.repository import SubmissionRepository
+
+    api = client(tmp_path)
+    kept = submit(api, "SUB-A")
+    SubmissionRepository(
+        create_db_engine(Settings(data_dir=tmp_path).database_path)
+    ).create("orphan", [])
+
+    assert [i["id"] for i in listing(api)] == [kept["id"]]
+
+
+def test_stream_ends_with_result_for_a_packet_of_only_unreadable_files(
+    tmp_path: Path,
+) -> None:
+    events = stream(
+        client(tmp_path), files=[("files", ("scan.pdf", b"not a readable pdf"))]
+    )
+
+    assert events[-1][0] == "result"
+    assert "error" not in [name for name, _ in events]

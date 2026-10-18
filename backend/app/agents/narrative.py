@@ -7,11 +7,13 @@ from typing import Any
 
 from deepagents.backends.utils import create_file_data
 
+from app.agents.events import message_events
 from app.agents.factory import build_agent, build_chat_models
 from app.agents.schemas import NarrativeOutput
 from app.domain.models import FieldState
 from app.persistence.database import MessageRow, NarrativeRow
 from app.persistence.repository import SubmissionRepository
+from app.progress import ProgressSink, emit
 from app.schemas import Narrative, SubmissionDetail
 from app.settings import Settings
 
@@ -38,7 +40,7 @@ and call it again."""
 INSTRUCTION = f"Read {REPORT_PATH} and write the summary and draft email."
 
 NarrativeWriter = Callable[
-    [dict[str, Any], list[tuple[str, str]], str], NarrativeOutput
+    [dict[str, Any], list[tuple[str, str]], str, ProgressSink | None], NarrativeOutput
 ]
 
 
@@ -67,7 +69,11 @@ class AgentNarrativeWriter:
         self._agent = agent
 
     def __call__(
-        self, report: dict[str, Any], history: list[tuple[str, str]], draft: str
+        self,
+        report: dict[str, Any],
+        history: list[tuple[str, str]],
+        draft: str,
+        progress: ProgressSink | None = None,
     ) -> NarrativeOutput:
         texts = {REPORT_PATH: json.dumps(report, indent=2)}
         if draft:
@@ -78,12 +84,28 @@ class AgentNarrativeWriter:
         ]
         if history and history[-1][0] == "assistant":
             messages.append({"role": "user", "content": INSTRUCTION})
-        state = self._agent.invoke(
+        state: dict[str, Any] = {}
+        seen: set[str] = set()
+        first = True
+        for state in self._agent.stream(
             {
                 "messages": messages,
                 "files": {p: create_file_data(t) for p, t in texts.items()},
-            }
-        )
+            },
+            stream_mode="values",
+        ):
+            for message in state.get("messages", []):
+                if message.id is None or message.id in seen:
+                    continue
+                seen.add(message.id)
+                # The first state is the input (including earlier chat turns), not agent output.
+                if first:
+                    continue
+                for event in message_events(
+                    message, "narrative", None, NarrativeOutput.__name__
+                ):
+                    emit(progress, event)
+            first = False
         result = state.get("structured_response")
         if result is None:
             raise RuntimeError("The model finished without returning the answer.")
@@ -98,7 +120,9 @@ def build_narrative_writer(settings: Settings) -> NarrativeWriter:
             build_agent(build_chat_models(settings), "/review", PROMPT, NarrativeOutput)
         )
 
-    return lambda report, history, draft: writer()(report, history, draft)
+    return lambda report, history, draft, progress=None: writer()(
+        report, history, draft, progress
+    )
 
 
 class NarrativeService:
@@ -109,10 +133,14 @@ class NarrativeService:
         self._writer = writer
 
     def generate(
-        self, submission_id: str, *, overwrite_draft: bool = True
+        self,
+        submission_id: str,
+        *,
+        overwrite_draft: bool = True,
+        progress: ProgressSink | None = None,
     ) -> Narrative:
         """Regenerate from the current review; an edited draft is kept and marked stale unless overwritten."""
-        return self._run(submission_id, None, overwrite_draft)
+        return self._run(submission_id, None, overwrite_draft, progress)
 
     def reply(self, submission_id: str, reviewer_message: str) -> Narrative:
         return self._run(submission_id, reviewer_message, overwrite_draft=False)
@@ -132,7 +160,11 @@ class NarrativeService:
         return self._repository.get(submission_id).narrative
 
     def _run(
-        self, submission_id: str, reviewer_message: str | None, overwrite_draft: bool
+        self,
+        submission_id: str,
+        reviewer_message: str | None,
+        overwrite_draft: bool,
+        progress: ProgressSink | None = None,
     ) -> Narrative:
         detail = self._repository.get(submission_id)
         current = detail.narrative
@@ -143,7 +175,9 @@ class NarrativeService:
         output: NarrativeOutput | None = None
         error: str | None = None
         try:
-            output = self._writer(review_report(detail), history, current.draft.body)
+            output = self._writer(
+                review_report(detail), history, current.draft.body, progress
+            )
         except Exception as exc:  # noqa: BLE001 - model failures are shown, never replaced with templated text
             error = str(exc) or type(exc).__name__
 

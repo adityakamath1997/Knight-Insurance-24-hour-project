@@ -10,6 +10,7 @@ from deepagents.backends.utils import create_file_data
 from langchain_core.language_models import BaseChatModel
 from pydantic import Field, create_model, model_validator
 
+from app.agents.events import message_events
 from app.agents.factory import (
     MAX_SCHEMA_RETRIES,
     StructuredOutputRetriesExhausted,
@@ -24,6 +25,7 @@ from app.agents.schemas import (
     SourceExtractionResult,
 )
 from app.domain.models import BUSINESS_FIELDS, Candidate, FieldName, FieldState
+from app.progress import ProgressEvent, ProgressSink, emit
 from app.schemas import SourceName
 from app.services.documents import PreparedDocument, PreparedPacket
 from app.services.review import SOURCE_FIELDS, SourceRun, source_documents
@@ -203,19 +205,69 @@ def _succeeded(
     )
 
 
+_SOURCE_LABEL: dict[SourceKind, str] = {
+    "email": "Email",
+    "pdf": "PDF",
+    "attachments": "Attachment",
+}
+_OUTCOME_LABEL = {"SUCCEEDED": "finished", "SKIPPED": "skipped"}
+
+
 class BoundedExtractionRunner:
     """The `Extractor` used by `ReviewService`: one agent per source, run concurrently."""
 
     def __init__(self, build: AgentBuilder) -> None:
         self._build = build
 
-    def __call__(self, packet: PreparedPacket) -> list[SourceRun]:
-        return asyncio.run(self._run_all(packet))
+    def __call__(
+        self, packet: PreparedPacket, progress: ProgressSink | None = None
+    ) -> list[SourceRun]:
+        return asyncio.run(self._run_all(packet, progress))
 
-    async def _run_all(self, packet: PreparedPacket) -> list[SourceRun]:
-        return list(await asyncio.gather(*(self.run(packet, s) for s in SOURCES)))
+    async def _run_all(
+        self, packet: PreparedPacket, progress: ProgressSink | None
+    ) -> list[SourceRun]:
+        return list(
+            await asyncio.gather(*(self.run(packet, s, progress) for s in SOURCES))
+        )
 
-    async def run(self, packet: PreparedPacket, source_kind: SourceKind) -> SourceRun:
+    async def run(
+        self,
+        packet: PreparedPacket,
+        source_kind: SourceKind,
+        progress: ProgressSink | None = None,
+    ) -> SourceRun:
+        name = _SOURCE_LABEL[source_kind]
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_started",
+                stage="extraction",
+                source=source_kind,
+                label=f"{name} extraction started",
+            ),
+        )
+        run = await self._execute(packet, source_kind, progress)
+        outcome = _OUTCOME_LABEL.get(run.status, "failed")
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_finished",
+                stage="extraction",
+                source=source_kind,
+                label=f"{name} extraction {outcome}",
+                status=run.status,
+                detail=run.error,
+            ),
+        )
+        return run
+
+    async def _execute(
+        self,
+        packet: PreparedPacket,
+        source_kind: SourceKind,
+        progress: ProgressSink | None,
+    ) -> SourceRun:
         files = build_source_files(packet, source_kind)
         if not files:
             return SourceRun(source=source_kind, status="SKIPPED")
@@ -228,12 +280,26 @@ class BoundedExtractionRunner:
                 source_kind,
                 extraction_schema(source_kind, file_names, all_readable),
             )
-            state = await agent.ainvoke(
+            state: dict[str, Any] = {}
+            seen: set[str] = set()
+            async for state in agent.astream(
                 {
                     "messages": [{"role": "user", "content": REQUEST}],
                     "files": {p: create_file_data(t) for p, t in files.items()},
-                }
-            )
+                },
+                stream_mode="values",
+            ):
+                for message in state.get("messages", []):
+                    if message.id is None or message.id in seen:
+                        continue
+                    seen.add(message.id)
+                    for event in message_events(
+                        message,
+                        "extraction",
+                        source_kind,
+                        SourceExtractionResult.__name__,
+                    ):
+                        emit(progress, event)
         except StructuredOutputRetriesExhausted as error:
             return SourceRun(
                 source=source_kind,

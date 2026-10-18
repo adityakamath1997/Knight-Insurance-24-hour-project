@@ -51,6 +51,18 @@ class Narrative(BaseModel):
     messages: list[Message] = []
 
 
+SortField = Literal["created_at", "id", "status", "business_name"]
+SortOrder = Literal["asc", "desc"]
+
+
+class SubmissionListItem(BaseModel):
+    id: str
+    created_at: datetime
+    business_name: str | None
+    overall_status: OverallStatus
+    document_count: int
+
+
 class SubmissionDetail(BaseModel):
     id: str
     created_at: datetime

@@ -1,7 +1,7 @@
 """Packet processing and override-driven deterministic reevaluation."""
 
-from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -24,7 +24,15 @@ from app.domain.normalization import (
 from app.domain.rules import evaluate_rules
 from app.persistence.database import DocumentRow, SourceRunRow
 from app.persistence.repository import SubmissionRepository
-from app.schemas import RunStatus, SourceName, SubmissionDetail
+from app.progress import ProgressEvent, ProgressSink, emit
+from app.schemas import (
+    RunStatus,
+    SortField,
+    SortOrder,
+    SourceName,
+    SubmissionDetail,
+    SubmissionListItem,
+)
 from app.services.documents import (
     APPLICATION_FILE_NAME,
     PreparedDocument,
@@ -51,7 +59,10 @@ class SourceRun(BaseModel):
     detected_types: dict[str, str] = Field(default_factory=dict)
 
 
-Extractor = Callable[[PreparedPacket], list[SourceRun]]
+class Extractor(Protocol):
+    def __call__(
+        self, packet: PreparedPacket, progress: ProgressSink | None = None
+    ) -> list[SourceRun]: ...
 
 
 def source_documents(
@@ -183,10 +194,28 @@ class ReviewService:
         self._narrative = narrative
 
     def create_submission(
-        self, email_text: str | None, uploads: list[UploadInput]
+        self,
+        email_text: str | None,
+        uploads: list[UploadInput],
+        progress: ProgressSink | None = None,
     ) -> SubmissionDetail:
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_started", stage="prepare", label="Reading the packet"
+            ),
+        )
         packet = prepare_submission_documents(email_text, uploads)
-        runs = self._extractor(packet)
+        count = len(packet.attachments) + (1 if packet.email else 0)
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_finished",
+                stage="prepare",
+                label=f"Read {count} document{'' if count == 1 else 's'}",
+            ),
+        )
+        runs = self._extractor(packet, progress)
         submission_id = str(uuid4())
         documents = ([packet.email] if packet.email else []) + packet.attachments
         self._repository.create(
@@ -203,6 +232,12 @@ class ReviewService:
             ],
         )
 
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_started", stage="rules", label="Evaluating rules R1-R5"
+            ),
+        )
         fields = _reconcile(packet, runs)
         detected = {
             name: kind for run in runs for name, kind in run.detected_types.items()
@@ -224,7 +259,37 @@ class ReviewService:
             ],
             detected,
         )
-        self._narrative.generate(submission_id)
+        detail = self.get_submission(submission_id)
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_finished",
+                stage="rules",
+                label="Rules evaluated",
+                status=detail.overall_status,
+            ),
+        )
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_started",
+                stage="narrative",
+                label="Drafting summary and email",
+            ),
+        )
+        narrative = self._narrative.generate(submission_id, progress=progress)
+        emit(
+            progress,
+            ProgressEvent(
+                kind="stage_finished",
+                stage="narrative",
+                label="Summary and draft ready"
+                if narrative.status == "SUCCEEDED"
+                else "Summary and draft failed",
+                status=narrative.status,
+                detail=narrative.error,
+            ),
+        )
         return self.get_submission(submission_id)
 
     def apply_override(
@@ -251,6 +316,11 @@ class ReviewService:
             f"override:{field_name.value}",
         )
         return self.get_submission(submission_id)
+
+    def list_submissions(
+        self, query: str, sort: SortField, order: SortOrder, limit: int
+    ) -> list[SubmissionListItem]:
+        return self._repository.list_submissions(query, sort, order, limit)
 
     def get_submission(self, submission_id: str) -> SubmissionDetail:
         return self._repository.get(submission_id)

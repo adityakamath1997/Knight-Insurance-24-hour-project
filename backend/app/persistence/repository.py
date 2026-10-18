@@ -1,5 +1,6 @@
 """All database reads and writes for submissions."""
 
+from collections import Counter
 from collections.abc import Sequence
 
 from sqlalchemy import Engine
@@ -20,8 +21,11 @@ from app.schemas import (
     Message,
     Narrative,
     Snapshot,
+    SortField,
+    SortOrder,
     SourceRunSummary,
     SubmissionDetail,
+    SubmissionListItem,
 )
 
 Fields = dict[FieldName, ReviewedField]
@@ -119,6 +123,56 @@ class SubmissionRepository:
             session.merge(narrative)
             session.add_all(messages)
             session.commit()
+
+    def list_submissions(
+        self, query: str, sort: SortField, order: SortOrder, limit: int
+    ) -> list[SubmissionListItem]:
+        """Reviewed submissions only. Filtering and sorting happen here, not in SQL, so
+        `query` is always a literal substring and business name comes from the JSON."""
+        with Session(self._engine) as session:
+            statuses = {
+                submission_id: status
+                for submission_id, status in session.exec(
+                    select(
+                        SnapshotRow.submission_id, SnapshotRow.overall_status
+                    ).order_by(SnapshotRow.id)  # the last snapshot per submission wins
+                )
+            }
+            counts = Counter(session.exec(select(DocumentRow.submission_id)))
+            items = [
+                SubmissionListItem(
+                    id=row.id,
+                    created_at=row.created_at,
+                    business_name=(row.reviewed_fields.get("business_name") or {}).get(
+                        "value"
+                    ),
+                    overall_status=statuses[row.id],
+                    document_count=counts[row.id],
+                )
+                for row in session.exec(select(SubmissionRow))
+                if row.id in statuses
+            ]
+        needle = query.strip().lower()
+        if needle:
+            items = [
+                i
+                for i in items
+                if needle in i.id.lower() or needle in (i.business_name or "").lower()
+            ]
+        reverse = order == "desc"
+        if sort == "business_name":
+            named = sorted(
+                (i for i in items if i.business_name),
+                key=lambda i: ((i.business_name or "").lower(), i.id),
+                reverse=reverse,
+            )
+            return (named + [i for i in items if not i.business_name])[:limit]
+        keys = {
+            "created_at": lambda i: (i.created_at, i.id),
+            "id": lambda i: i.id,
+            "status": lambda i: (i.overall_status, i.id),
+        }
+        return sorted(items, key=keys[sort], reverse=reverse)[:limit]
 
     def get(self, submission_id: str) -> SubmissionDetail:
         with Session(self._engine) as session:

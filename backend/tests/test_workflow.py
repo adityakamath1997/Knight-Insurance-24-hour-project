@@ -31,7 +31,9 @@ def upload(name: str, content: bytes | str) -> UploadInput:
     return UploadInput(file_name=name, content=data)
 
 
-def write_narrative(report: dict, history: list, draft: str) -> NarrativeOutput:
+def write_narrative(
+    report: dict, history: list, draft: str, progress=None
+) -> NarrativeOutput:
     return NarrativeOutput(summary="summary", draft_email="draft")
 
 
@@ -170,7 +172,7 @@ def test_file_type_comes_from_the_extension_not_the_whole_name() -> None:
     assert packet.schedule.state == FieldState.MISSING
 
 
-def skipped_extractor(packet: PreparedPacket) -> list[SourceRun]:
+def skipped_extractor(packet: PreparedPacket, progress=None) -> list[SourceRun]:
     return [
         SourceRun(source=source, status="SKIPPED")
         for source in ("email", "pdf", "attachments")
@@ -237,7 +239,7 @@ def missing(source: str, file: str, names: list[FieldName]) -> dict:
 def test_unreadable_application_stops_the_email_from_claiming_absence(
     tmp_path: Path,
 ) -> None:
-    def extract(packet: PreparedPacket) -> list[SourceRun]:
+    def extract(packet: PreparedPacket, progress=None) -> list[SourceRun]:
         return [
             SourceRun(
                 source="email",
@@ -266,7 +268,7 @@ def test_unreadable_application_stops_the_email_from_claiming_absence(
 def test_unreadable_attachment_blocks_a_no_but_not_a_found_loss_run(
     tmp_path: Path, answer: str, expected: str
 ) -> None:
-    def extract(packet: PreparedPacket) -> list[SourceRun]:
+    def extract(packet: PreparedPacket, progress=None) -> list[SourceRun]:
         return [
             SourceRun(source="email", status="SKIPPED"),
             SourceRun(source="pdf", status="SKIPPED"),
@@ -334,7 +336,7 @@ def candidates(source: str, file: str, raws: dict[FieldName, str]) -> dict:
 
 
 def fake_extractor(pdf_status: str = "SUCCEEDED"):
-    def extract(packet: PreparedPacket) -> list[SourceRun]:
+    def extract(packet: PreparedPacket, progress=None) -> list[SourceRun]:
         assert packet.email is not None and len(packet.attachments) == 2
         return [
             SourceRun(
@@ -481,7 +483,7 @@ def extractor_with(
     attachments_file: str = "loss_runs.md",
     detected: dict[str, str] | None = None,
 ):
-    def extract(packet: PreparedPacket) -> list[SourceRun]:
+    def extract(packet: PreparedPacket, progress=None) -> list[SourceRun]:
         runs = [SourceRun(source="email", status="SKIPPED")]
         if email:
             runs = [
@@ -583,3 +585,30 @@ def test_override_reruns_r2_when_vehicle_counts_change(tmp_path: Path) -> None:
     assert unequal.rules[1].status == "FLAG"
     equal = service.apply_override(submission_id, F.DECLARED_VEHICLE_COUNT, 3, None)
     assert equal.rules[1].status == "PASS"
+
+
+def test_create_submission_reports_stages_in_order(tmp_path: Path) -> None:
+    events = []
+    detail = review_service(
+        tmp_path / "db.sqlite3", fake_extractor()
+    ).create_submission("Broker email", PACKET, events.append)
+
+    stages = [(e.kind, e.stage) for e in events if e.stage != "extraction"]
+    assert stages == [
+        ("stage_started", "prepare"),
+        ("stage_finished", "prepare"),
+        ("stage_started", "rules"),
+        ("stage_finished", "rules"),
+        ("stage_started", "narrative"),
+        ("stage_finished", "narrative"),
+    ]
+    finished = {e.stage: e.status for e in events if e.kind == "stage_finished"}
+    assert finished["rules"] == detail.overall_status
+    assert finished["narrative"] == "SUCCEEDED"
+
+
+def test_progress_is_optional(tmp_path: Path) -> None:
+    detail = review_service(
+        tmp_path / "db.sqlite3", fake_extractor()
+    ).create_submission("Broker email", PACKET)
+    assert detail.overall_status == "NEEDS_REVIEW"
