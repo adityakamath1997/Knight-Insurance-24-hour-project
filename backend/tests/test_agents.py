@@ -131,18 +131,20 @@ def test_each_source_gets_only_its_own_files() -> None:
     }
     assert set(files["pdf"]) == {
         "/submission/manifest.txt",
-        "/submission/application.pdf",
+        "/submission/application.pdf.txt",
     }
     assert set(files["attachments"]) == {
         "/submission/manifest.txt",
-        "/submission/loss_runs.pdf",
+        "/submission/loss_runs.pdf.txt",
     }
     pdf_manifest = files["pdf"]["/submission/manifest.txt"]
-    assert pdf_manifest == "application.pdf (pdf)"
+    assert pdf_manifest == "application.pdf (pdf) -> /submission/application.pdf.txt"
     manifest = files["attachments"]["/submission/manifest.txt"]
     assert "scan.pdf (pdf, unreadable)" in manifest
-    assert "loss_runs.pdf (pdf)" in manifest
+    assert "loss_runs.pdf (pdf) -> /submission/loss_runs.pdf.txt" in manifest
     assert "application.pdf" not in manifest
+    assert "vehicles.csv" not in manifest
+    assert not any(path.endswith(".pdf") for path in files["pdf"])
 
     unreadable_only = prepare_submission_documents("Hi", [upload("scan.pdf", b"x")])
     assert build_source_files(unreadable_only, "pdf") == {}
@@ -161,11 +163,11 @@ def test_only_the_canonical_application_name_reaches_the_pdf_agent() -> None:
 
     assert set(build_source_files(packet, "pdf")) == {
         "/submission/manifest.txt",
-        "/submission/Application.PDF",
+        "/submission/Application.PDF.txt",
     }
     assert set(build_source_files(packet, "attachments")) == {
         "/submission/manifest.txt",
-        "/submission/application_v2.pdf",
+        "/submission/application_v2.pdf.txt",
     }
 
 
@@ -187,7 +189,7 @@ def test_each_agent_is_loaded_with_exactly_its_file_names() -> None:
     }
     assert set(build_source_files(packet, "pdf")) == {
         "/submission/manifest.txt",
-        "/submission/application.pdf",
+        "/submission/application.pdf.txt",
     }
     assert set(build_source_files(packet, "attachments")) == {
         "/submission/manifest.txt",
