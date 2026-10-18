@@ -16,6 +16,18 @@ class FieldName(StrEnum):
     SCHEDULE_VEHICLE_COUNT = "schedule_vehicle_count"
 
 
+# Fields the email and PDF sources may provide; the other two come from attachments.
+BUSINESS_FIELDS: tuple[FieldName, ...] = (
+    FieldName.BUSINESS_NAME,
+    FieldName.REQUESTED_EFFECTIVE_DATE,
+    FieldName.GARAGING_STATE,
+    FieldName.OPERATIONS_DESCRIPTION,
+    FieldName.DECLARED_VEHICLE_COUNT,
+    FieldName.OPERATING_RADIUS_MILES,
+    FieldName.HAZARDOUS_MATERIALS,
+)
+
+
 class FieldState(StrEnum):
     KNOWN = "KNOWN"
     MISSING = "MISSING"
