@@ -26,7 +26,7 @@ packet (pasted email and/or files)
 - Reviewer corrections are labelled overrides that keep the original value, state and evidence; rules rerun and a snapshot is stored.
 - Each submission is processed independently; nothing carries over between packets.
 
-HTTP API (all under `/submissions`): `POST /` (multipart `email_text` and `files`), `GET /{id}`, `PATCH /{id}/fields/{field}`, `PATCH /{id}/draft`, `POST /{id}/narrative/regenerate`, `POST /{id}/narrative/messages`, plus `GET /health`.
+HTTP API (all under `/submissions`): `POST /` (multipart `email_text` and `files`), `POST /stream` (same input, server-sent events), `GET /` (history list), `GET /{id}`, `PATCH /{id}/fields/{field}`, `PATCH /{id}/draft`, `POST /{id}/narrative/regenerate`, `POST /{id}/narrative/messages`, plus `GET /health`.
 
 ## Setup and run
 
@@ -75,7 +75,7 @@ uv run poe check    # ruff, then pytest
 uv run poe test     # pytest only
 ```
 
-Result: 232 passed. Tests use fake models and make no network calls. They cover missing information, source conflicts, unequal vehicle counts, the 150 vs 150.1 mile threshold, all three sample packets through the HTTP API, overrides, persistence across app instances, narrative failure and edits, and the input cases under Known limitations.
+Result: 254 passed. Tests use fake models and make no network calls. They cover missing information, source conflicts, unequal vehicle counts, the 150 vs 150.1 mile threshold, all three sample packets through the HTTP API, overrides, persistence across app instances, narrative failure and edits, and the input cases under Known limitations.
 
 Frontend (from `frontend/`): `npm run lint`. There is no frontend test suite.
 
@@ -90,6 +90,14 @@ Frontend (from `frontend/`): `npm run lint`. There is no frontend test suite.
 - AI underwriter summary, editable draft broker email (marked stale after an override when edited), and reviewer chat.
 - Model failures shown as states, never replaced by simulated output.
 - Submission text is treated as data, never as instructions.
+
+## Extra work (beyond the required flow)
+
+Not required by the brief; the required flow works without them.
+
+- **Live agent events:** the UI submits to `POST /submissions/stream` and shows a stage checklist (read the packet, extract per source, evaluate rules, draft summary and email) plus an "Agent activity" panel with one tab per agent (email, PDF, attachments, narrative) showing what that agent does as it happens: the model's own text, every tool call with its arguments (for example `read_file` and the submitted answer), and every tool output. The panel stays on screen after the review finishes, until a new packet is submitted or a stored submission is selected; events are not stored, so reloading the page or opening a history entry does not show them. The stream emits `progress` events, then exactly one `result` (the full submission) or `error`. `POST /submissions` is unchanged.
+- **History panel:** a side panel backed by `GET /submissions?q=&sort=&order=&limit=` lists stored submissions with search by id or business name (literal, case-insensitive) and sorting by newest, oldest, id, status or business name. Selecting a row reloads that submission; `limit` is 1-200 and invalid `sort`, `order` or `limit` values return 422.
+- Progress events have `kind` (`stage_started`, `stage_finished`, `agent_message`, `tool_call`, `tool_result`), `stage`, `source`, `label`, `status`, `tool` and `detail` (model text, tool arguments or tool output, clipped to 8000 characters with `truncated` set). They contain packet text, since the agents read it, and are streamed only, not stored. A failed run's error text is the `detail` of its finishing event. If the client disconnects mid-stream the review still completes and is stored.
 
 ## AI coding tools used
 
