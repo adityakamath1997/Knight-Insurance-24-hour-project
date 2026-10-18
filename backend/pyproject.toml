@@ -1,0 +1,29 @@
+[project]
+name = "backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "deepagents>=0.7.28",
+    "fastapi>=0.143.3",
+    "pydantic-settings>=2.16.0",
+    "pypdf>=6.21.1",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "poethepoet>=0.49.0",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.poe.tasks]
+backend = "uvicorn app.main:app --reload --port 8000"
+test = "pytest"
+lint = "ruff check ."
+check = { sequence = ["lint", "test"] }

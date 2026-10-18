@@ -1,0 +1,21 @@
+KNIGHT INSURANCE - AI SOLUTIONS DEVELOPER
+24-hour candidate exercise
+
+Instructions email: Saturday, October 17, 2026 at 12:00 AM Pacific Time
+Deadline: Saturday, October 17, 2026 at 11:59 PM Pacific Time
+
+1. Read Assignment_Brief.pdf.
+2. Review field_specification.json and rules.json.
+3. Build and test using sample_submissions/SUB-A, SUB-B and SUB-C.
+4. Submit source code, README, a 5-10 minute demonstration video and tests.
+5. Use Submission_Template.txt when replying to the invitation.
+
+Each sample folder is independent. All PDFs contain selectable text.
+All businesses and submission facts are fictional, and email addresses use example.com.
+Do not decode or validate the fictional VIN strings; that is not a supplied rule.
+No prior insurance knowledge, AWS account, live email account or paid LLM provider is required.
+Use a real model for extraction and at least one narrative output; a local model is acceptable.
+Do not send follow-up email automatically. Display an editable draft only.
+
+Questions and delivery: reply to the invitation email. Its deadline and contact details apply.
+If the PDF and JSON files appear inconsistent, report the discrepancy before assuming an additional rule.

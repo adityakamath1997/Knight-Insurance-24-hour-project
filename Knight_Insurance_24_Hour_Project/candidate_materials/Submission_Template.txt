@@ -1,0 +1,20 @@
+Subject: AI Developer Project Submission - [YOUR FULL NAME]
+
+Full name:
+Email:
+Source code ZIP attached or repository URL:
+Access instructions if the repository is private:
+Demo video attachment or accessible URL (5-10 minutes):
+README location:
+Setup and run commands:
+LLM provider and model:
+AI coding tools used:
+Approximate time spent:
+Implemented features:
+Known limitations or incomplete requirements:
+Test command and test result summary:
+
+Los Angeles onsite work: [Already able to work onsite / Willing to relocate / Unable to work onsite]
+Earliest realistic onsite start or relocation timeline:
+
+I confirm that I can explain the submitted implementation and identify the tools and assistance used.
