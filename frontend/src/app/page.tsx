@@ -1,68 +1,146 @@
-import Image from "next/image";
+"use client";
+
+import { Fragment, useState } from "react";
+import { createSubmission } from "@/lib/api";
+import type { SubmissionDetail } from "@/lib/types";
+import { FieldReview } from "@/components/field-review";
+import { NarrativePanel } from "@/components/narrative-panel";
+import { RuleResults } from "@/components/rule-results";
+import { SubmissionForm } from "@/components/submission-form";
+
+type Phase = "idle" | "processing" | "error" | "done";
+
+const RUN_STYLES: Record<string, string> = {
+  SUCCEEDED: "bg-emerald-100 text-emerald-800",
+  SKIPPED: "bg-slate-100 text-slate-700",
+  MODEL_FAILED: "bg-red-100 text-red-800",
+  VALIDATION_FAILED: "bg-red-100 text-red-800",
+};
+
+function PacketSummary({ detail }: { detail: SubmissionDetail }) {
+  const failed = detail.source_runs.filter(
+    (run) => run.status === "MODEL_FAILED" || run.status === "VALIDATION_FAILED",
+  );
+  return (
+    <section className="flex flex-col gap-3">
+      {failed.length > 0 && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+          <p className="font-semibold">
+            Extraction did not complete for {failed.map((run) => run.source).join(", ")}.
+          </p>
+          <p>Affected fields are shown as missing or unknown; deterministic rules still ran on what was read.</p>
+          <ul className="mt-1 list-disc pl-5">
+            {failed.map((run) => (
+              <li key={run.source}>
+                {run.source}: {run.status}
+                {run.error && ` — ${run.error}`}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <div className="card flex flex-col gap-3 text-sm md:flex-row md:justify-between">
+        <div>
+          <h2 className="mb-1 font-semibold">Documents</h2>
+          <ul className="flex flex-wrap gap-2">
+            {detail.documents.map((doc) => (
+              <li
+                key={doc.file_name}
+                className={`badge ${doc.readable ? "bg-slate-100 text-slate-800" : "bg-amber-100 text-amber-900"}`}
+              >
+                {doc.file_name}
+                {doc.detected_type && ` · ${doc.detected_type}`}
+                {!doc.readable && " · unreadable"}
+              </li>
+            ))}
+            {detail.documents.length === 0 && <li className="text-slate-500">None</li>}
+          </ul>
+        </div>
+        <div>
+          <h2 className="mb-1 font-semibold">Extraction runs</h2>
+          <ul className="flex flex-wrap gap-2">
+            {detail.source_runs.map((run) => (
+              <li key={run.source} className={`badge ${RUN_STYLES[run.status]}`}>
+                {run.source}: {run.status}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export default function Home() {
+  const [detail, setDetail] = useState<SubmissionDetail | null>(null);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(emailText: string, files: File[]) {
+    // Drop all prior applicant data before the new packet starts.
+    setDetail(null);
+    setError(null);
+    setPhase("processing");
+    try {
+      setDetail(await createSubmission(emailText, files));
+      setPhase("done");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Submission failed.");
+      setPhase("error");
+    }
+  }
+
+  function reset() {
+    setDetail(null);
+    setError(null);
+    setPhase("idle");
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">Submission Review</h1>
+            <p className="text-xs text-slate-500">Commercial auto · underwriter workspace</p>
+          </div>
+          {detail && (
+            <button className="btn" onClick={reset}>
+              New packet
+            </button>
+          )}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+      </header>
+
+      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6">
+        {!detail && <SubmissionForm busy={phase === "processing"} onSubmit={submit} />}
+
+        {phase === "idle" && (
+          <p className="text-center text-sm text-slate-500">Add a broker email and/or packet files to begin.</p>
+        )}
+
+        {phase === "processing" && (
+          <div className="card flex items-center gap-3" role="status">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+            <span className="text-sm">Reading the packet and extracting fields. This can take a minute.</span>
+          </div>
+        )}
+
+        {phase === "error" && error && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900" role="alert">
+            <p className="font-semibold">Could not process this packet.</p>
+            <p>{error}</p>
+          </div>
+        )}
+
+        {detail && (
+          <Fragment key={detail.id}>
+            <RuleResults detail={detail} />
+            <PacketSummary detail={detail} />
+            <FieldReview detail={detail} onUpdate={setDetail} />
+            <NarrativePanel detail={detail} onUpdate={setDetail} />
+          </Fragment>
+        )}
       </main>
     </div>
   );
