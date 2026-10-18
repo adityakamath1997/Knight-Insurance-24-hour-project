@@ -127,8 +127,11 @@ def validate_override(field: FieldName, value: object) -> FieldValue:
 
 
 def comparison_key(field: FieldName, value: FieldValue) -> object:
-    """Key under which harmless differences (case, trailing period) compare equal."""
-    if field in _TEXT_FIELDS and isinstance(value, str):
+    """Key under which harmless differences compare equal: case for text, and a
+    trailing period for the free-text operations description."""
+    if field == FieldName.BUSINESS_NAME and isinstance(value, str):
+        return value.casefold()
+    if field == FieldName.OPERATIONS_DESCRIPTION and isinstance(value, str):
         return value.casefold().rstrip(".")
     return value
 

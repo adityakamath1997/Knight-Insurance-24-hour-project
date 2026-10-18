@@ -156,15 +156,15 @@ function FieldRow({
         </ul>
       )}
 
-      {field.state === "MISSING" && (
+      {field.state !== "KNOWN" && (
         <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900">
           Checked: {field.inspected_sources.length ? field.inspected_sources.join(", ") : "no sources"}
-          {field.name === "loss_runs_present" && (
-            <>
-              {" "}
-              · Attachments: {field.attachment_inventory.length ? field.attachment_inventory.join(", ") : "none"}
-            </>
-          )}
+        </p>
+      )}
+
+      {field.name === "loss_runs_present" && (
+        <p className="rounded-lg bg-slate-50 p-2 text-xs text-slate-700">
+          Attachments: {field.attachment_inventory.length ? field.attachment_inventory.join(", ") : "none"}
         </p>
       )}
 

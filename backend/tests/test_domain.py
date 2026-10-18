@@ -145,6 +145,18 @@ def test_case_insensitive_business_name_and_state_name_match():
     assert (name.state, state.state, state.value) == (S.KNOWN, S.KNOWN, "CA")
 
 
+def test_business_name_punctuation_difference_is_a_conflict():
+    name = reconcile_candidates(
+        F.BUSINESS_NAME,
+        [
+            cand(F.BUSINESS_NAME, "Acme LLC."),
+            cand(F.BUSINESS_NAME, "Acme LLC", "pdf", "application.pdf"),
+        ],
+        inspected_sources=[],
+    )
+    assert name.state == S.CONFLICT
+
+
 def test_source_conflict_keeps_both_alternatives_and_null_value():
     field = reconcile_candidates(
         F.OPERATING_RADIUS_MILES,

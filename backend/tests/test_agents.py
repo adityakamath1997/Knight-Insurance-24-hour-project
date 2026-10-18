@@ -349,6 +349,31 @@ def test_loss_runs_answer_must_agree_with_detected_documents(
             SourceExtractionResult(**answer)
 
 
+@pytest.mark.parametrize(
+    ("all_readable", "document_type", "state", "valid"),
+    [
+        (True, "other", FieldState.MISSING, False),
+        (True, "other", FieldState.KNOWN, True),
+        (True, "unclassifiable", FieldState.MISSING, True),
+        (False, "other", FieldState.MISSING, True),
+    ],
+)
+def test_missing_loss_runs_needs_an_unreadable_or_unclassifiable_file(
+    all_readable: bool, document_type: str, state: FieldState, valid: bool
+) -> None:
+    schema = extraction_schema("attachments", {"a.pdf"}, all_readable)
+    raw = None if state == FieldState.MISSING else "No"
+    answer = {
+        "fields": [field(F.LOSS_RUNS_PRESENT, raw, "a.pdf", state).model_dump()],
+        "documents": [{"file_name": "a.pdf", "document_type": document_type}],
+    }
+    if valid:
+        schema.model_validate(answer)
+    else:
+        with pytest.raises(ValidationError, match="not MISSING"):
+            schema.model_validate(answer)
+
+
 def test_exhausted_schema_retries_mark_source_validation_failed() -> None:
     agents = {
         "email": FakeAgent(StructuredOutputRetriesExhausted("still invalid")),

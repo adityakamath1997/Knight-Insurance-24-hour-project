@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from deepagents.backends.utils import create_file_data
 from langchain_core.language_models import BaseChatModel
-from pydantic import Field, create_model
+from pydantic import Field, create_model, model_validator
 
 from app.agents.factory import (
     MAX_SCHEMA_RETRIES,
@@ -23,7 +23,7 @@ from app.agents.schemas import (
     ExtractedField,
     SourceExtractionResult,
 )
-from app.domain.models import BUSINESS_FIELDS, Candidate, FieldName
+from app.domain.models import BUSINESS_FIELDS, Candidate, FieldName, FieldState
 from app.schemas import SourceName
 from app.services.documents import PreparedDocument, PreparedPacket
 from app.services.review import SOURCE_FIELDS, SourceRun, source_documents
@@ -86,7 +86,8 @@ which says whether a loss runs report was actually supplied:
 - state MISSING if no file you read is a loss runs report but a file is unreadable or a
   file you read has document_type unclassifiable, with evidence naming that file.
 - raw_value "No" otherwise, with locator "uploaded attachment inventory", any listed file as
-  source_file, and an observation listing every file considered.
+  source_file, and an observation listing every file considered. When every file is readable
+  and none is loss_runs or unclassifiable, the answer is always "No", never MISSING.
 Also return documents: the document_type of each file you read. The answer must agree with it.""",
 }
 
@@ -96,7 +97,7 @@ AgentBuilder = Callable[[SourceKind, type[SourceExtractionResult]], Any]
 
 
 def extraction_schema(
-    source: SourceKind, file_names: Iterable[str]
+    source: SourceKind, file_names: Iterable[str], all_readable: bool = False
 ) -> type[SourceExtractionResult]:
     """Answer schema that only accepts this source's fields and this packet's file names."""
     files: Any = Literal[tuple(sorted(file_names))]
@@ -124,10 +125,31 @@ def extraction_schema(
         file_name=described(DetectedDocument, "file_name", files),
     )
     exactly_one = {"min_length": 1, "max_length": 1} if source == "attachments" else {}
+    validators: dict[str, Any] = {}
+    if source == "attachments" and all_readable:
+
+        def _missing_needs_a_reason(
+            self: SourceExtractionResult,
+        ) -> SourceExtractionResult:
+            types = {doc.document_type for doc in self.documents}
+            if not types & {"loss_runs", "unclassifiable"} and any(
+                f.state == FieldState.MISSING for f in self.fields
+            ):
+                raise ValueError(
+                    "Every file is readable and none you read is typed loss_runs or "
+                    "unclassifiable, so loss_runs_present must be KNOWN with raw_value "
+                    "No, not MISSING. List every file you read in documents."
+                )
+            return self
+
+        validators["_missing_needs_a_reason"] = model_validator(mode="after")(
+            _missing_needs_a_reason
+        )
     return create_model(
         SourceExtractionResult.__name__,
         __base__=SourceExtractionResult,
         __doc__=SourceExtractionResult.__doc__,
+        __validators__=validators,
         fields=described(SourceExtractionResult, "fields", list[field], **exactly_one),
         documents=described(
             SourceExtractionResult, "documents", list[document], default=[]
@@ -197,10 +219,15 @@ class BoundedExtractionRunner:
         files = build_source_files(packet, source_kind)
         if not files:
             return SourceRun(source=source_kind, status="SKIPPED")
-        file_names = {doc.file_name for doc in source_documents(packet, source_kind)}
+        documents = source_documents(packet, source_kind)
+        file_names = {doc.file_name for doc in documents}
+        all_readable = all(doc.readable for doc in documents)
 
         try:
-            agent = self._build(source_kind, extraction_schema(source_kind, file_names))
+            agent = self._build(
+                source_kind,
+                extraction_schema(source_kind, file_names, all_readable),
+            )
             state = await agent.ainvoke(
                 {
                     "messages": [{"role": "user", "content": REQUEST}],
