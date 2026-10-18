@@ -92,6 +92,41 @@ def _failure(run: SourceRun, documents: list[PreparedDocument]) -> Candidate:
     )
 
 
+def _unreadable(source: SourceName, unreadable: list[PreparedDocument]) -> Candidate:
+    source_file = ", ".join(doc.file_name for doc in unreadable)
+    return Candidate(
+        source=source,
+        source_file=source_file,
+        raw_value=None,
+        state=FieldState.INVALID,
+        evidence=[
+            Evidence(
+                source_file=source_file,
+                locator="uploaded attachment inventory",
+                excerpt_or_observation=f"Could not be read, so absence cannot be concluded: {source_file}",
+            )
+        ],
+    )
+
+
+def _no_attachments() -> Candidate:
+    # Absence of any attachment is observed directly, so it is a known "No".
+    return Candidate(
+        source="attachments",
+        source_file="attachment inventory",
+        raw_value="No",
+        state=FieldState.KNOWN,
+        value=False,
+        evidence=[
+            Evidence(
+                source_file="attachment inventory",
+                locator="uploaded attachment inventory",
+                excerpt_or_observation="No attachment besides the application and the vehicle schedule was supplied, so no loss run report is present.",
+            )
+        ],
+    )
+
+
 def _reconcile(
     packet: PreparedPacket, runs: list[SourceRun]
 ) -> dict[FieldName, ReviewedField]:
@@ -99,6 +134,11 @@ def _reconcile(
     for name in FieldName:
         if name == FieldName.SCHEDULE_VEHICLE_COUNT:
             fields[name] = packet.schedule
+            continue
+        if name == FieldName.LOSS_RUNS_PRESENT and not source_documents(
+            packet, "attachments"
+        ):
+            fields[name] = reconcile_candidates(name, [_no_attachments()], [])
             continue
 
         candidates: list[Candidate] = []
@@ -109,12 +149,18 @@ def _reconcile(
             # Skipped sources had only unreadable files; they are still inspected.
             documents = source_documents(packet, run.source)
             inspected += [doc.describe() for doc in documents]
-            if run.status == "SKIPPED":
-                continue
+            unreadable = [doc for doc in documents if not doc.readable]
             if run.status == "SUCCEEDED":
                 candidates += [
                     _normalized(name, c) for c in run.candidates.get(name, [])
                 ]
+                # An unreadable file may be the loss runs report; only a found one passes.
+                found = any(c.value is True for c in candidates)
+                if name == FieldName.LOSS_RUNS_PRESENT and unreadable and not found:
+                    candidates.append(_unreadable(run.source, unreadable))
+            elif run.status == "SKIPPED":
+                if unreadable:
+                    candidates.append(_unreadable(run.source, unreadable))
             else:
                 candidates.append(_failure(run, documents))
         fields[name] = reconcile_candidates(name, candidates, inspected)

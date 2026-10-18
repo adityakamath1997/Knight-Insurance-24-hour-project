@@ -24,7 +24,7 @@ dev = [
 pythonpath = ["."]
 
 [tool.poe.tasks]
-backend = "uvicorn app.main:app --reload --port 8000"
+backend = "uvicorn app.main:create_app --factory --reload --port 8000"
 test = "pytest"
 lint = "ruff check ."
 check = { sequence = ["lint", "test"] }

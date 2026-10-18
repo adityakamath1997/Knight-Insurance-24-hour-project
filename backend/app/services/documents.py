@@ -3,6 +3,7 @@
 import csv
 import io
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel
@@ -13,6 +14,7 @@ from app.domain.models import Candidate, Evidence, FieldName, FieldState, Review
 PASTED_EMAIL = "pasted broker email"
 APPLICATION_FILE_NAME = "application.pdf"
 EMAIL_FILE_NAME = "broker_email.txt"
+RESERVED_FILE_NAMES = ("manifest.txt",)
 SCHEDULE_HEADER = ["vehicle_id", "vin", "year", "make", "model"]
 
 DocumentKind = Literal["email", "pdf", "csv", "other"]
@@ -88,12 +90,12 @@ def _pdf_text(content: bytes) -> str | None:
 
 def _prepare(upload: UploadInput) -> PreparedDocument:
     name = upload.file_name.casefold()
-    suffix = name.rsplit(".", 1)[-1]
+    suffix = PurePosixPath(name).suffix
     if name == EMAIL_FILE_NAME:
         kind, text = "email", _decode(upload.content)
-    elif suffix == "pdf":
+    elif suffix == ".pdf":
         kind, text = "pdf", _pdf_text(upload.content)
-    elif suffix == "csv":
+    elif suffix == ".csv":
         kind, text = "csv", _decode(upload.content)
     else:
         kind, text = "other", _decode(upload.content)
@@ -112,37 +114,54 @@ def _count_vehicle_rows(text: str) -> int | None:
     return sum(1 for row in rows[1:] if any(cell.strip() for cell in row))
 
 
+def _invalid_schedule(
+    source_file: str, observation: str, inspected: list[str]
+) -> ReviewedField:
+    return ReviewedField(
+        name=FieldName.SCHEDULE_VEHICLE_COUNT,
+        state=FieldState.INVALID,
+        candidates=[
+            Candidate(
+                source="schedule",
+                source_file=source_file,
+                raw_value=None,
+                state=FieldState.INVALID,
+                evidence=[
+                    Evidence(
+                        source_file=source_file,
+                        locator=source_file,
+                        excerpt_or_observation=observation,
+                    )
+                ],
+            )
+        ],
+        inspected_sources=inspected,
+    )
+
+
 def _schedule_field(attachments: Sequence[PreparedDocument]) -> ReviewedField:
-    doc = next((doc for doc in attachments if doc.kind == "csv"), None)
-    if doc is None:
+    csvs = [doc for doc in attachments if doc.kind == "csv"]
+    if not csvs:
         return ReviewedField(
             name=FieldName.SCHEDULE_VEHICLE_COUNT,
             state=FieldState.MISSING,
             inspected_sources=[doc.describe() for doc in attachments],
         )
+    if len(csvs) > 1:
+        names = ", ".join(doc.file_name for doc in csvs)
+        return _invalid_schedule(
+            names,
+            f"More than one vehicle schedule was supplied ({names}); the count is ambiguous.",
+            [doc.describe() for doc in csvs],
+        )
 
+    doc = csvs[0]
     count = _count_vehicle_rows(doc.text) if doc.text is not None else None
     if count is None:
-        observation = f"Unreadable, or header is not {','.join(SCHEDULE_HEADER)}."
-        return ReviewedField(
-            name=FieldName.SCHEDULE_VEHICLE_COUNT,
-            state=FieldState.INVALID,
-            candidates=[
-                Candidate(
-                    source="schedule",
-                    source_file=doc.file_name,
-                    raw_value=None,
-                    state=FieldState.INVALID,
-                    evidence=[
-                        Evidence(
-                            source_file=doc.file_name,
-                            locator=doc.file_name,
-                            excerpt_or_observation=observation,
-                        )
-                    ],
-                )
-            ],
-            inspected_sources=[doc.describe()],
+        return _invalid_schedule(
+            doc.file_name,
+            f"Unreadable, or header is not {','.join(SCHEDULE_HEADER)}.",
+            [doc.describe()],
         )
     return ReviewedField(
         name=FieldName.SCHEDULE_VEHICLE_COUNT,
@@ -172,13 +191,22 @@ def prepare_submission_documents(
     email_text: str | None, uploads: Sequence[UploadInput]
 ) -> PreparedPacket:
     documents = [_prepare(upload) for upload in uploads]
+    names = [doc.file_name.casefold() for doc in documents]
+    if len(set(names)) != len(names):
+        raise PacketError("File names must be unique within a packet.")
+    if reserved := [n for n in names if n in RESERVED_FILE_NAMES]:
+        raise PacketError(f"{reserved[0]} is a reserved file name.")
     attachments = [doc for doc in documents if doc.kind != "email"]
     pasted = (email_text or "").strip()
     if not pasted and not documents:
         raise PacketError("Provide broker email text or at least one file.")
 
-    # A packet has one email: pasted text, else the uploaded broker_email.txt.
-    email = next((doc for doc in documents if doc.kind == "email"), None)
+    emails = [doc for doc in documents if doc.kind == "email"]
+    if len(emails) + bool(pasted) > 1:
+        raise PacketError(
+            f"Provide one broker email: pasted text or {EMAIL_FILE_NAME}, not both."
+        )
+    email = emails[0] if emails else None
     if pasted:
         email = PreparedDocument(
             file_name=PASTED_EMAIL, kind="email", content=pasted.encode(), text=pasted

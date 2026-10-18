@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable
+from functools import cache
 from typing import Any
 
 from deepagents.backends.utils import create_file_data
@@ -75,19 +76,29 @@ class AgentNarrativeWriter:
             {"role": "user" if role == "reviewer" else "assistant", "content": content}
             for role, content in history
         ]
+        if history and history[-1][0] == "assistant":
+            messages.append({"role": "user", "content": INSTRUCTION})
         state = self._agent.invoke(
             {
                 "messages": messages,
                 "files": {p: create_file_data(t) for p, t in texts.items()},
             }
         )
-        return state["structured_response"]
+        result = state.get("structured_response")
+        if result is None:
+            raise RuntimeError("The model finished without returning the answer.")
+        return result
 
 
-def build_narrative_writer(settings: Settings) -> AgentNarrativeWriter:
-    return AgentNarrativeWriter(
-        build_agent(build_chat_models(settings), "/review", PROMPT, NarrativeOutput)
-    )
+def build_narrative_writer(settings: Settings) -> NarrativeWriter:
+    # Built on first use so the API starts, and shows FAILED, when no model is configured.
+    @cache
+    def writer() -> AgentNarrativeWriter:
+        return AgentNarrativeWriter(
+            build_agent(build_chat_models(settings), "/review", PROMPT, NarrativeOutput)
+        )
+
+    return lambda report, history, draft: writer()(report, history, draft)
 
 
 class NarrativeService:
@@ -137,31 +148,44 @@ class NarrativeService:
             error = str(exc) or type(exc).__name__
 
         keep_draft = current.draft.edited and not overwrite_draft
-        messages = (
-            [
+        messages = []
+        if reviewer_message:
+            messages.append(
                 MessageRow(
                     submission_id=submission_id,
                     role="reviewer",
                     content=reviewer_message,
-                ),
-                MessageRow(
-                    submission_id=submission_id, role="assistant", content=output.reply
-                ),
-            ]
-            if output and reviewer_message
-            else []
-        )
+                )
+            )
+            if output:
+                messages.append(
+                    MessageRow(
+                        submission_id=submission_id,
+                        role="assistant",
+                        content=output.reply,
+                    )
+                )
+        if output:
+            summary = output.summary
+            body = current.draft.body if keep_draft else output.draft_email
+            edited = stale = keep_draft
+        else:
+            # A failed call keeps what was already shown and records the failure.
+            summary, body, edited = (
+                current.summary,
+                current.draft.body,
+                current.draft.edited,
+            )
+            stale = current.draft.stale or (edited and reviewer_message is None)
         self._repository.save_narrative(
             NarrativeRow(
                 submission_id=submission_id,
                 status="SUCCEEDED" if output else "FAILED",
                 error=error,
-                summary=output.summary if output else None,
-                draft_body=current.draft.body
-                if keep_draft
-                else (output.draft_email if output else ""),
-                draft_edited=keep_draft,
-                draft_stale=keep_draft,
+                summary=summary,
+                draft_body=body,
+                draft_edited=edited,
+                draft_stale=stale,
             ),
             messages,
         )

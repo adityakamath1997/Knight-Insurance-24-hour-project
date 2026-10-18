@@ -51,12 +51,14 @@ class DetectedDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_name: str = Field(description="Exact file name as listed in manifest.txt.")
-    document_type: Literal["application", "loss_runs", "vehicle_schedule", "other"] = (
-        Field(
-            description="application: commercial auto application form. loss_runs: "
-            "a loss runs or loss history report, including one reporting zero losses. "
-            "vehicle_schedule: a vehicle list. other: anything else."
-        )
+    document_type: Literal[
+        "application", "loss_runs", "vehicle_schedule", "other", "unclassifiable"
+    ] = Field(
+        description="application: commercial auto application form. loss_runs: "
+        "a loss runs or loss history report, including one reporting zero losses. "
+        "vehicle_schedule: a vehicle list. other: a document you can identify that "
+        "is none of these. unclassifiable: readable, but you cannot tell what "
+        "kind of document it is."
     )
 
 
@@ -72,6 +74,30 @@ class SourceExtractionResult(BaseModel):
         default=[],
         description="Document type of each file you read (attachments source only).",
     )
+
+    @model_validator(mode="after")
+    def _loss_runs_answer_matches_documents(self) -> Self:
+        types = {doc.file_name: doc.document_type for doc in self.documents}
+        for field in self.fields:
+            if FieldName(field.name) != FieldName.LOSS_RUNS_PRESENT:
+                continue
+            said_yes = field.state == FieldState.KNOWN and (
+                (field.raw_value or "").strip().casefold() == "yes"
+            )
+            if said_yes:
+                if types.get(field.evidence[0].source_file) != "loss_runs":
+                    raise ValueError(
+                        "Yes needs evidence from a file whose document_type is loss_runs"
+                    )
+            elif "loss_runs" in types.values():
+                raise ValueError(
+                    "A file is typed loss_runs, so loss_runs_present must be Yes"
+                )
+            elif field.state == FieldState.KNOWN and "unclassifiable" in types.values():
+                raise ValueError(
+                    "A file is unclassifiable, so loss_runs_present must be MISSING, not No"
+                )
+        return self
 
 
 class NarrativeOutput(BaseModel):

@@ -1,6 +1,6 @@
 import re
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 
 from app.domain.models import (
     Candidate,
@@ -11,6 +11,8 @@ from app.domain.models import (
 )
 
 PLACEHOLDERS = frozenset({"", "not provided"})
+# Upper bound so numbers stay finite and storable.
+MAX_NUMBER = 10**15
 
 US_STATES = {
     "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
@@ -27,9 +29,8 @@ US_STATES = {
 }  # fmt: skip
 _STATE_BY_NAME = {name.casefold(): code for code, name in US_STATES.items()}
 
-_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_COUNT = re.compile(r"^(\d+)(?:\.0+)?$")
-_RADIUS = re.compile(r"^(\d+(?:\.\d+)?)$")
+_COUNT = re.compile(r"^([0-9]{1,15})(?:\.0+)?$")
+_RADIUS = re.compile(r"^[0-9]{1,15}(?:\.[0-9]{1,15})?$")
 _YES = frozenset({"yes", "true"})
 _NO = frozenset({"no", "false"})
 
@@ -49,10 +50,8 @@ def _state_code(text: str) -> str | None:
 
 
 def _parse_date(text: str) -> date | None:
-    if not _ISO_DATE.match(text):
-        return None
     try:
-        return date.fromisoformat(text)
+        return datetime.strptime(text, "%Y-%m-%d").date()
     except ValueError:
         return None
 
@@ -75,8 +74,7 @@ def normalize_value(field: FieldName, raw: str | None) -> Normalized:
         match = _COUNT.match(text)
         return (FieldState.KNOWN, int(match.group(1))) if match else _INVALID
     if field == FieldName.OPERATING_RADIUS_MILES:
-        match = _RADIUS.match(text)
-        return (FieldState.KNOWN, float(match.group(1))) if match else _INVALID
+        return (FieldState.KNOWN, float(text)) if _RADIUS.match(text) else _INVALID
     if field in _BOOL_FIELDS:
         lowered = text.casefold()
         if lowered in _YES:
@@ -101,19 +99,23 @@ def validate_override(field: FieldName, value: object) -> FieldValue:
             return code
         raise ValueError(f"{field} must be a US state code or name")
     if field == FieldName.REQUESTED_EFFECTIVE_DATE:
-        parsed = _parse_date(value) if isinstance(value, str) else None
+        parsed = _parse_date(value.strip()) if isinstance(value, str) else None
         if parsed:
             return parsed.isoformat()
-        raise ValueError(f"{field} must be a valid YYYY-MM-DD date")
+        raise ValueError(f"{field} must be a valid date")
     if field in _COUNT_FIELDS:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= MAX_NUMBER
+        ):
             return value
         raise ValueError(f"{field} must be a nonnegative integer")
     if field == FieldName.OPERATING_RADIUS_MILES:
         if (
             isinstance(value, int | float)
             and not isinstance(value, bool)
-            and value >= 0
+            and 0 <= value <= MAX_NUMBER
         ):
             return float(value)
         raise ValueError(f"{field} must be a nonnegative number")
@@ -125,7 +127,7 @@ def validate_override(field: FieldName, value: object) -> FieldValue:
 
 
 def comparison_key(field: FieldName, value: FieldValue) -> object:
-    """Key under which harmless differences (case, trailing period, 150 vs 150.0) compare equal."""
+    """Key under which harmless differences (case, trailing period) compare equal."""
     if field in _TEXT_FIELDS and isinstance(value, str):
         return value.casefold().rstrip(".")
     return value

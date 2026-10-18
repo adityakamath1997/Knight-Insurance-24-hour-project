@@ -2,10 +2,12 @@
 
 import asyncio
 from collections.abc import Callable, Iterable
+from functools import cache
 from pathlib import PurePath
 from typing import Any, Literal
 
 from deepagents.backends.utils import create_file_data
+from langchain_core.language_models import BaseChatModel
 from pydantic import Field, create_model
 
 from app.agents.factory import (
@@ -85,7 +87,7 @@ which says whether a loss runs report was actually supplied:
   file you read has document_type unclassifiable, with evidence naming that file.
 - raw_value "No" otherwise, with locator "uploaded attachment inventory", any listed file as
   source_file, and an observation listing every file considered.
-Also return documents: the document_type of each file you read.""",
+Also return documents: the document_type of each file you read. The answer must agree with it.""",
 }
 
 REQUEST = "Extract the fields from the files listed in the manifest."
@@ -189,9 +191,9 @@ class BoundedExtractionRunner:
         if not files:
             return SourceRun(source=source_kind, status="SKIPPED")
         file_names = {doc.file_name for doc in source_documents(packet, source_kind)}
-        agent = self._build(source_kind, extraction_schema(source_kind, file_names))
 
         try:
+            agent = self._build(source_kind, extraction_schema(source_kind, file_names))
             state = await agent.ainvoke(
                 {
                     "messages": [{"role": "user", "content": REQUEST}],
@@ -212,13 +214,23 @@ class BoundedExtractionRunner:
                 attempts=1,
                 error=str(error) or type(error).__name__,
             )
-        return _succeeded(
-            source_kind, state["structured_response"], answer_attempts(state)
-        )
+        result = state.get("structured_response")
+        if result is None:
+            return SourceRun(
+                source=source_kind,
+                status="VALIDATION_FAILED",
+                attempts=1,
+                error="The model finished without returning the structured answer.",
+            )
+        return _succeeded(source_kind, result, answer_attempts(state))
 
 
 def build_extraction_runner(settings: Settings) -> BoundedExtractionRunner:
-    models = build_chat_models(settings)
+    # Built on first use so the API starts, and shows MODEL_FAILED, when no model is configured.
+    @cache
+    def models() -> list[BaseChatModel]:
+        return build_chat_models(settings)
+
     return BoundedExtractionRunner(
-        lambda source, schema: build_agent(models, ROOT, PROMPTS[source], schema)
+        lambda source, schema: build_agent(models(), ROOT, PROMPTS[source], schema)
     )
