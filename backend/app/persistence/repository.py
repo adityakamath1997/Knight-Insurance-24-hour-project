@@ -8,11 +8,21 @@ from sqlmodel import Session, select
 from app.domain.models import FieldName, ReviewedField, RuleEvaluation
 from app.persistence.database import (
     DocumentRow,
+    MessageRow,
+    NarrativeRow,
     SnapshotRow,
     SourceRunRow,
     SubmissionRow,
 )
-from app.schemas import DocumentSummary, Snapshot, SourceRunSummary, SubmissionDetail
+from app.schemas import (
+    DocumentSummary,
+    Draft,
+    Message,
+    Narrative,
+    Snapshot,
+    SourceRunSummary,
+    SubmissionDetail,
+)
 
 Fields = dict[FieldName, ReviewedField]
 
@@ -101,6 +111,15 @@ class SubmissionRepository:
             _write_review(session, submission, fields, evaluation, trigger)
             session.commit()
 
+    def save_narrative(
+        self, narrative: NarrativeRow, messages: Sequence[MessageRow] = ()
+    ) -> None:
+        with Session(self._engine) as session:
+            _get_submission(session, narrative.submission_id)
+            session.merge(narrative)
+            session.add_all(messages)
+            session.commit()
+
     def get(self, submission_id: str) -> SubmissionDetail:
         with Session(self._engine) as session:
             submission = _get_submission(session, submission_id)
@@ -122,6 +141,12 @@ class SubmissionRepository:
                     .order_by(SnapshotRow.id)
                 )
             ]
+            narrative = session.get(NarrativeRow, submission_id)
+            messages = session.exec(
+                select(MessageRow)
+                .where(MessageRow.submission_id == submission_id)
+                .order_by(MessageRow.id)
+            )
             return SubmissionDetail(
                 id=submission.id,
                 created_at=submission.created_at,
@@ -137,4 +162,20 @@ class SubmissionRepository:
                 rules=snapshots[-1].rules,
                 overall_status=snapshots[-1].overall_status,
                 snapshots=snapshots,
+                narrative=Narrative(
+                    status=narrative.status,
+                    error=narrative.error,
+                    summary=narrative.summary,
+                    draft=Draft(
+                        body=narrative.draft_body,
+                        edited=narrative.draft_edited,
+                        stale=narrative.draft_stale,
+                    ),
+                    messages=[
+                        Message.model_validate(m, from_attributes=True)
+                        for m in messages
+                    ],
+                )
+                if narrative
+                else Narrative(),
             )

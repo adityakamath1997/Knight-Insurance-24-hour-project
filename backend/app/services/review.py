@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from app.agents.narrative import NarrativeService
 from app.domain.models import (
     BUSINESS_FIELDS,
     Candidate,
@@ -25,6 +26,7 @@ from app.persistence.database import DocumentRow, SourceRunRow
 from app.persistence.repository import SubmissionRepository
 from app.schemas import RunStatus, SourceName, SubmissionDetail
 from app.services.documents import (
+    APPLICATION_FILE_NAME,
     PreparedDocument,
     PreparedPacket,
     UploadInput,
@@ -52,14 +54,18 @@ class SourceRun(BaseModel):
 Extractor = Callable[[PreparedPacket], list[SourceRun]]
 
 
-def _source_documents(
+def source_documents(
     packet: PreparedPacket, source: SourceName
 ) -> list[PreparedDocument]:
     if source == "email":
         return [packet.email] if packet.email else []
-    if source == "pdf":
-        return [doc for doc in packet.attachments if doc.kind == "pdf"]
-    return packet.attachments
+    wants_application = source == "pdf"
+    return [
+        doc
+        for doc in packet.attachments
+        if (doc.file_name.casefold() == APPLICATION_FILE_NAME) == wants_application
+        and (wants_application or doc is not packet.schedule_document)
+    ]
 
 
 def _normalized(field: FieldName, candidate: Candidate) -> Candidate:
@@ -98,10 +104,13 @@ def _reconcile(
         candidates: list[Candidate] = []
         inspected: list[str] = []
         for run in runs:
-            if run.status == "SKIPPED" or name not in SOURCE_FIELDS[run.source]:
+            if name not in SOURCE_FIELDS[run.source]:
                 continue
-            documents = _source_documents(packet, run.source)
+            # Skipped sources had only unreadable files; they are still inspected.
+            documents = source_documents(packet, run.source)
             inspected += [doc.describe() for doc in documents]
+            if run.status == "SKIPPED":
+                continue
             if run.status == "SUCCEEDED":
                 candidates += [
                     _normalized(name, c) for c in run.candidates.get(name, [])
@@ -117,14 +126,21 @@ def _reconcile(
 
 
 class ReviewService:
-    def __init__(self, repository: SubmissionRepository, extractor: Extractor) -> None:
+    def __init__(
+        self,
+        repository: SubmissionRepository,
+        extractor: Extractor,
+        narrative: NarrativeService,
+    ) -> None:
         self._repository = repository
         self._extractor = extractor
+        self._narrative = narrative
 
     def create_submission(
         self, email_text: str | None, uploads: list[UploadInput]
     ) -> SubmissionDetail:
         packet = prepare_submission_documents(email_text, uploads)
+        runs = self._extractor(packet)
         submission_id = str(uuid4())
         documents = ([packet.email] if packet.email else []) + packet.attachments
         self._repository.create(
@@ -141,7 +157,6 @@ class ReviewService:
             ],
         )
 
-        runs = self._extractor(packet)
         fields = _reconcile(packet, runs)
         detected = {
             name: kind for run in runs for name, kind in run.detected_types.items()
@@ -163,6 +178,7 @@ class ReviewService:
             ],
             detected,
         )
+        self._narrative.generate(submission_id)
         return self.get_submission(submission_id)
 
     def apply_override(

@@ -11,7 +11,8 @@ from pypdf import PdfReader
 from app.domain.models import Candidate, Evidence, FieldName, FieldState, ReviewedField
 
 PASTED_EMAIL = "pasted broker email"
-EMAIL_SUFFIXES = (".txt", ".eml")
+APPLICATION_FILE_NAME = "application.pdf"
+EMAIL_FILE_NAME = "broker_email.txt"
 SCHEDULE_HEADER = ["vehicle_id", "vin", "year", "make", "model"]
 
 DocumentKind = Literal["email", "pdf", "csv", "other"]
@@ -51,6 +52,18 @@ class PreparedPacket(BaseModel):
     def attachment_inventory(self) -> list[str]:
         return [doc.describe() for doc in self.attachments]
 
+    @property
+    def schedule_document(self) -> PreparedDocument | None:
+        """The single readable CSV with the schedule header; code counts it, no agent reads it."""
+        csvs = [doc for doc in self.attachments if doc.kind == "csv"]
+        if (
+            len(csvs) == 1
+            and csvs[0].text is not None
+            and _count_vehicle_rows(csvs[0].text) is not None
+        ):
+            return csvs[0]
+        return None
+
 
 def _decode(content: bytes) -> str | None:
     try:
@@ -74,13 +87,14 @@ def _pdf_text(content: bytes) -> str | None:
 
 
 def _prepare(upload: UploadInput) -> PreparedDocument:
-    suffix = upload.file_name.lower().rsplit(".", 1)[-1]
-    if suffix == "pdf":
+    name = upload.file_name.casefold()
+    suffix = name.rsplit(".", 1)[-1]
+    if name == EMAIL_FILE_NAME:
+        kind, text = "email", _decode(upload.content)
+    elif suffix == "pdf":
         kind, text = "pdf", _pdf_text(upload.content)
     elif suffix == "csv":
         kind, text = "csv", _decode(upload.content)
-    elif f".{suffix}" in EMAIL_SUFFIXES:
-        kind, text = "email", _decode(upload.content)
     else:
         kind, text = "other", _decode(upload.content)
     return PreparedDocument(
@@ -163,7 +177,7 @@ def prepare_submission_documents(
     if not pasted and not documents:
         raise PacketError("Provide broker email text or at least one file.")
 
-    # A packet has one email: pasted text, else the uploaded .txt/.eml file.
+    # A packet has one email: pasted text, else the uploaded broker_email.txt.
     email = next((doc for doc in documents if doc.kind == "email"), None)
     if pasted:
         email = PreparedDocument(

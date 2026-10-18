@@ -4,6 +4,8 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session
 
+from app.agents.narrative import NarrativeService
+from app.agents.schemas import NarrativeOutput
 from app.domain.models import Candidate, Evidence, FieldName, FieldState
 from app.persistence.database import DocumentRow, SubmissionRow, create_db_engine
 from app.persistence.repository import SubmissionNotFoundError, SubmissionRepository
@@ -29,8 +31,14 @@ def upload(name: str, content: bytes | str) -> UploadInput:
     return UploadInput(file_name=name, content=data)
 
 
+def write_narrative(report: dict, history: list, draft: str) -> NarrativeOutput:
+    return NarrativeOutput(summary="summary", draft_email="draft")
+
+
 def review_service(path: Path, extractor: Extractor) -> ReviewService:
-    return ReviewService(SubmissionRepository(create_db_engine(path)), extractor)
+    repository = SubmissionRepository(create_db_engine(path))
+    narrative = NarrativeService(repository, write_narrative)
+    return ReviewService(repository, extractor, narrative)
 
 
 def test_settings_uses_local_sqlite_path(tmp_path: Path) -> None:
@@ -87,6 +95,22 @@ def test_uploaded_txt_is_the_email_body() -> None:
     packet = prepare_submission_documents(None, [upload("broker_email.txt", "Hi")])
     assert packet.email is not None and packet.email.text == "Hi"
     assert packet.attachments == []
+
+
+def test_only_broker_email_txt_is_the_email() -> None:
+    packet = prepare_submission_documents(
+        None,
+        [
+            upload("Broker_Email.TXT", "Hi"),
+            upload("notes.txt", "x"),
+            upload("a.eml", "y"),
+        ],
+    )
+    assert packet.email is not None and packet.email.text == "Hi"
+    assert [(d.file_name, d.kind) for d in packet.attachments] == [
+        ("notes.txt", "other"),
+        ("a.eml", "other"),
+    ]
 
 
 def test_empty_packet_is_rejected() -> None:
@@ -194,12 +218,9 @@ def fake_extractor(pdf_status: str = "SUCCEEDED"):
                 status="SUCCEEDED",
                 attempts=1,
                 candidates=candidates(
-                    "attachments", "application.pdf", {F.LOSS_RUNS_PRESENT: "false"}
+                    "attachments", "vehicles.csv", {F.LOSS_RUNS_PRESENT: "false"}
                 ),
-                detected_types={
-                    "application.pdf": "application",
-                    "vehicles.csv": "vehicle schedule",
-                },
+                detected_types={"vehicles.csv": "vehicle schedule"},
             ),
         ]
 
@@ -238,7 +259,7 @@ def test_submission_reconciles_sources_and_persists_across_engines(
     assert detail.overall_status == "NEEDS_REVIEW"
     assert [(d.file_name, d.kind, d.detected_type) for d in detail.documents] == [
         ("pasted broker email", "email", None),
-        ("application.pdf", "pdf", "application"),
+        ("application.pdf", "pdf", None),
         ("vehicles.csv", "csv", "vehicle schedule"),
     ]
     assert [s.trigger for s in detail.snapshots] == ["initial"]

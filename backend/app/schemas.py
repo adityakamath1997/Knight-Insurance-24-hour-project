@@ -31,6 +31,26 @@ class Snapshot(BaseModel):
     rules: list[RuleResult]
 
 
+class Draft(BaseModel):
+    body: str = ""
+    edited: bool = False
+    stale: bool = False
+
+
+class Message(BaseModel):
+    role: Literal["reviewer", "assistant"]
+    content: str
+    created_at: datetime
+
+
+class Narrative(BaseModel):
+    status: Literal["SUCCEEDED", "FAILED", "NOT_RUN"] = "NOT_RUN"
+    error: str | None = None
+    summary: str | None = None
+    draft: Draft = Draft()
+    messages: list[Message] = []
+
+
 class SubmissionDetail(BaseModel):
     id: str
     created_at: datetime
@@ -40,3 +60,4 @@ class SubmissionDetail(BaseModel):
     rules: list[RuleResult]
     overall_status: OverallStatus
     snapshots: list[Snapshot]
+    narrative: Narrative = Narrative()

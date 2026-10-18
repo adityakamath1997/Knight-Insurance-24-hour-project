@@ -53,6 +53,28 @@ class SnapshotRow(SQLModel, table=True):
     rules: list[dict[str, Any]] = Field(sa_type=JSON)
 
 
+class NarrativeRow(SQLModel, table=True):
+    __tablename__ = "narratives"
+
+    submission_id: str = Field(foreign_key="submissions.id", primary_key=True)
+    status: str
+    error: str | None = None
+    summary: str | None = None
+    draft_body: str = ""
+    draft_edited: bool = False
+    draft_stale: bool = False
+
+
+class MessageRow(SQLModel, table=True):
+    __tablename__ = "narrative_messages"
+
+    id: int | None = Field(default=None, primary_key=True)
+    submission_id: str = Field(foreign_key="submissions.id", index=True)
+    created_at: datetime = Field(default_factory=_now)
+    role: str
+    content: str
+
+
 def _configure_connection(connection: Any, _record: Any) -> None:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
