@@ -517,12 +517,10 @@ def test_third_rejected_answer_fails_the_run() -> None:
 class FakeWriter:
     def __init__(self, *outputs: NarrativeOutput | Exception) -> None:
         self.outputs = list(outputs)
-        self.calls: list[tuple[dict, list, str]] = []
+        self.calls: list[tuple[dict, str]] = []
 
-    def __call__(
-        self, report: dict, history: list, draft: str, progress=None
-    ) -> NarrativeOutput:
-        self.calls.append((report, list(history), draft))
+    def __call__(self, report: dict, draft: str, progress=None) -> NarrativeOutput:
+        self.calls.append((report, draft))
         output = self.outputs.pop(0)
         if isinstance(output, Exception):
             raise output
@@ -538,9 +536,7 @@ def services(
 
 
 def output(n: int) -> NarrativeOutput:
-    return NarrativeOutput(
-        summary=f"summary {n}", draft_email=f"draft {n}", reply=f"reply {n}"
-    )
+    return NarrativeOutput(summary=f"summary {n}", draft_email=f"draft {n}")
 
 
 def test_narrative_report_has_review_and_every_item_to_request(tmp_path: Path) -> None:
@@ -548,8 +544,8 @@ def test_narrative_report_has_review_and_every_item_to_request(tmp_path: Path) -
     review, _ = services(tmp_path, writer)
     detail = review.create_submission("Broker email", PACKET)
 
-    report, history, draft = writer.calls[0]
-    assert (history, draft) == ([], "")
+    report, draft = writer.calls[0]
+    assert draft == ""
     assert report["overall_status"] == detail.overall_status
     assert report["rules"] == [r.model_dump(mode="json") for r in detail.rules]
     assert len(report["fields"]) == len(FieldName)
@@ -558,7 +554,7 @@ def test_narrative_report_has_review_and_every_item_to_request(tmp_path: Path) -
         f"R3 {detail.rules[2].name}: UNKNOWN - {detail.rules[2].reason}",
         f"R5 {detail.rules[4].name}: FLAG - {detail.rules[4].reason}",
     ]
-    assert detail.narrative.model_dump(exclude={"messages"}) == {
+    assert detail.narrative.model_dump() == {
         "status": "SUCCEEDED",
         "error": None,
         "summary": "summary 1",
@@ -600,44 +596,14 @@ def test_override_does_not_rerun_narrative(
     }
 
 
-def test_reply_replays_only_this_submissions_messages(tmp_path: Path) -> None:
-    writer = FakeWriter(output(1), output(2), output(3), output(4))
-    review, narrative = services(tmp_path, writer)
-    first = review.create_submission("Broker email", PACKET).id
-    narrative.reply(first, "Why is R5 flagged?")
-    other = review.create_submission("Broker email", PACKET).id
-
-    result = narrative.reply(first, "Shorter please")
-    assert writer.calls[3][1] == [
-        ("reviewer", "Why is R5 flagged?"),
-        ("assistant", "reply 2"),
-        ("reviewer", "Shorter please"),
-    ]
-    assert writer.calls[3][2] == "draft 2"
-    assert [(m.role, m.content) for m in result.messages] == [
-        ("reviewer", "Why is R5 flagged?"),
-        ("assistant", "reply 2"),
-        ("reviewer", "Shorter please"),
-        ("assistant", "reply 4"),
-    ]
-    assert review.get_submission(other).narrative.messages == []
-
-
 def test_agent_writer_puts_report_and_draft_in_vfs() -> None:
     agent = FakeAgent(output(1))
-    AgentNarrativeWriter(agent)(
-        {"rules": []}, [("reviewer", "Hi"), ("assistant", "Hello")], "draft"
-    )
+    AgentNarrativeWriter(agent)({"rules": []}, "draft")
 
     [state] = agent.calls
     assert json.loads(state["files"][REPORT_PATH]["content"]) == {"rules": []}
     assert state["files"][DRAFT_PATH]["content"] == "draft"
-    assert [m["role"] for m in state["messages"]] == [
-        "user",
-        "user",
-        "assistant",
-        "user",
-    ]
+    assert [m["role"] for m in state["messages"]] == ["user"]
 
 
 def test_missing_structured_answer_is_a_failure_not_a_crash() -> None:
@@ -646,7 +612,7 @@ def test_missing_structured_answer_is_a_failure_not_a_crash() -> None:
             return {"messages": []}
 
     with pytest.raises(RuntimeError, match="without returning"):
-        AgentNarrativeWriter(NoAnswer())({"rules": []}, [], "")
+        AgentNarrativeWriter(NoAnswer())({"rules": []}, "")
 
 
 def test_extraction_without_answer_or_model_is_recorded_per_source() -> None:
@@ -672,34 +638,14 @@ def test_extraction_without_answer_or_model_is_recorded_per_source() -> None:
     ]
 
 
-def test_failed_calls_keep_earlier_content_and_the_reviewer_message(
-    tmp_path: Path,
-) -> None:
-    writer = FakeWriter(output(1), ConnectionError("down"), ConnectionError("down"))
+def test_failed_regenerate_keeps_earlier_content(tmp_path: Path) -> None:
+    writer = FakeWriter(output(1), ConnectionError("down"))
     review, narrative = services(tmp_path, writer)
     submission_id = review.create_submission("Broker email", PACKET).id
 
-    replied = narrative.reply(submission_id, "Why R5?")
-    assert (replied.status, replied.error) == ("FAILED", "down")
-    assert (replied.summary, replied.draft.body) == ("summary 1", "draft 1")
-    assert [(m.role, m.content) for m in replied.messages] == [("reviewer", "Why R5?")]
-
     regenerated = narrative.generate(submission_id)
-    assert regenerated.status == "FAILED"
+    assert (regenerated.status, regenerated.error) == ("FAILED", "down")
     assert (regenerated.summary, regenerated.draft.body) == ("summary 1", "draft 1")
-
-
-def test_regenerate_after_chat_ends_with_a_user_turn(tmp_path: Path) -> None:
-    agent = FakeAgent(output(1), output(2), output(3))
-    writer = AgentNarrativeWriter(agent)
-    repository = SubmissionRepository(create_db_engine(tmp_path / "db.sqlite3"))
-    narrative = NarrativeService(repository, writer)
-    review = ReviewService(repository, fake_extractor(), narrative)
-    submission_id = review.create_submission("Broker email", PACKET).id
-    narrative.reply(submission_id, "Why?")
-    narrative.generate(submission_id)
-
-    assert {m["role"] for m in [agent.calls[-1]["messages"][-1]]} == {"user"}
 
 
 def source_events(events: list, source: str) -> list[tuple[str, str, str | None]]:
@@ -765,9 +711,7 @@ def test_narrative_writer_emits_model_text_and_tool_events_but_not_the_input() -
                 AIMessage(
                     "",
                     tool_calls=[
-                        tool_call(
-                            "NarrativeOutput", summary="S", draft_email="D", reply=""
-                        )
+                        tool_call("NarrativeOutput", summary="S", draft_email="D")
                     ],
                 ),
             ]
@@ -778,7 +722,6 @@ def test_narrative_writer_emits_model_text_and_tool_events_but_not_the_input() -
 
     result = AgentNarrativeWriter(agent)(
         {"overall_status": "READY"},
-        [("reviewer", "Earlier question"), ("assistant", "Earlier answer")],
         "",
         events.append,
     )
@@ -793,7 +736,6 @@ def test_narrative_writer_emits_model_text_and_tool_events_but_not_the_input() -
     ]
     assert events[0].detail == "Reading the report first."
     assert "READY" in (events[2].detail or "")
-    assert all("Earlier answer" not in (e.detail or "") for e in events)
 
 
 def test_long_tool_output_is_clipped_and_flagged() -> None:

@@ -113,6 +113,3 @@ class NarrativeOutput(BaseModel):
         description="Editable draft to the broker requesting every entry in "
         "items_to_request. Never sent."
     )
-    reply: str = Field(
-        default="", description="Answer to the reviewer's latest message, if any."
-    )

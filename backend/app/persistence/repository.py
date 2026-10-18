@@ -9,7 +9,6 @@ from sqlmodel import Session, select
 from app.domain.models import FieldName, ReviewedField, RuleEvaluation
 from app.persistence.database import (
     DocumentRow,
-    MessageRow,
     NarrativeRow,
     SnapshotRow,
     SourceRunRow,
@@ -18,7 +17,6 @@ from app.persistence.database import (
 from app.schemas import (
     DocumentSummary,
     Draft,
-    Message,
     Narrative,
     Snapshot,
     SortField,
@@ -115,13 +113,10 @@ class SubmissionRepository:
             _write_review(session, submission, fields, evaluation, trigger)
             session.commit()
 
-    def save_narrative(
-        self, narrative: NarrativeRow, messages: Sequence[MessageRow] = ()
-    ) -> None:
+    def save_narrative(self, narrative: NarrativeRow) -> None:
         with Session(self._engine) as session:
             _get_submission(session, narrative.submission_id)
             session.merge(narrative)
-            session.add_all(messages)
             session.commit()
 
     def list_submissions(
@@ -196,11 +191,6 @@ class SubmissionRepository:
                 )
             ]
             narrative = session.get(NarrativeRow, submission_id)
-            messages = session.exec(
-                select(MessageRow)
-                .where(MessageRow.submission_id == submission_id)
-                .order_by(MessageRow.id)
-            )
             return SubmissionDetail(
                 id=submission.id,
                 created_at=submission.created_at,
@@ -225,10 +215,6 @@ class SubmissionRepository:
                         edited=narrative.draft_edited,
                         stale=narrative.draft_stale,
                     ),
-                    messages=[
-                        Message.model_validate(m, from_attributes=True)
-                        for m in messages
-                    ],
                 )
                 if narrative
                 else Narrative(),

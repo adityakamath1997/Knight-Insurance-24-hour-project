@@ -37,18 +37,11 @@ class Draft(BaseModel):
     stale: bool = False
 
 
-class Message(BaseModel):
-    role: Literal["reviewer", "assistant"]
-    content: str
-    created_at: datetime
-
-
 class Narrative(BaseModel):
     status: Literal["SUCCEEDED", "FAILED", "NOT_RUN"] = "NOT_RUN"
     error: str | None = None
     summary: str | None = None
     draft: Draft = Draft()
-    messages: list[Message] = []
 
 
 SortField = Literal["created_at", "id", "status", "business_name"]

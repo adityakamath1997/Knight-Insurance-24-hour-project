@@ -110,17 +110,14 @@ def failing_extractor(packet: PreparedPacket, progress=None) -> list[SourceRun]:
     ]
 
 
-def writer(report: dict, history: list, draft: str, progress=None) -> NarrativeOutput:
+def writer(report: dict, draft: str, progress=None) -> NarrativeOutput:
     return NarrativeOutput(
         summary=f"Status {report['overall_status']}",
         draft_email=f"Please send {len(report['items_to_request'])} items",
-        reply=f"Answer {len(history)}",
     )
 
 
-def failing_writer(
-    report: dict, history: list, draft: str, progress=None
-) -> NarrativeOutput:
+def failing_writer(report: dict, draft: str, progress=None) -> NarrativeOutput:
     raise ConnectionError("model unavailable")
 
 
@@ -271,7 +268,6 @@ def test_model_failures_are_recorded_not_5xx(tmp_path: Path) -> None:
         ("PATCH", "/fields/business_name", {"value": "X"}),
         ("PATCH", "/draft", {"body": "x"}),
         ("POST", "/narrative/regenerate", None),
-        ("POST", "/narrative/messages", {"message": "x"}),
     ],
 )
 def test_unknown_submission_is_404(
@@ -310,8 +306,6 @@ def test_override_reruns_rules_and_rejects_read_only_or_wrong_input(
         headers={"content-type": "application/json"},
     )
     assert infinite.status_code == 422
-    blank = api.post(f"/submissions/{sid}/narrative/messages", json={"message": "  "})
-    assert blank.status_code == 422
     assert (
         api.patch(f"{url}/business_name", json={"note": "no value"}).status_code == 422
     )
@@ -329,7 +323,7 @@ def test_override_reruns_rules_and_rejects_read_only_or_wrong_input(
     assert client(tmp_path).get(f"/submissions/{sid}").json() == detail
 
 
-def test_draft_edit_reply_and_regenerate_persist(tmp_path: Path) -> None:
+def test_draft_edit_and_regenerate_persist(tmp_path: Path) -> None:
     api = client(tmp_path)
     sid = submit(api, "SUB-B")["id"]
 
@@ -339,16 +333,7 @@ def test_draft_edit_reply_and_regenerate_persist(tmp_path: Path) -> None:
         "edited": True,
         "stale": False,
     }
-
-    replied = api.post(
-        f"/submissions/{sid}/narrative/messages", json={"message": "Why R5?"}
-    ).json()
-    assert [(m["role"], m["content"]) for m in replied["narrative"]["messages"]] == [
-        ("reviewer", "Why R5?"),
-        ("assistant", "Answer 1"),
-    ]
-    assert replied["narrative"]["draft"]["body"] == "My draft"
-    assert client(tmp_path).get(f"/submissions/{sid}").json() == replied
+    assert client(tmp_path).get(f"/submissions/{sid}").json() == edited
 
     regenerated = api.post(f"/submissions/{sid}/narrative/regenerate").json()
     assert regenerated["narrative"]["draft"]["edited"] is False

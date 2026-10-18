@@ -31,9 +31,7 @@ def upload(name: str, content: bytes | str) -> UploadInput:
     return UploadInput(file_name=name, content=data)
 
 
-def write_narrative(
-    report: dict, history: list, draft: str, progress=None
-) -> NarrativeOutput:
+def write_narrative(report: dict, draft: str, progress=None) -> NarrativeOutput:
     return NarrativeOutput(summary="summary", draft_email="draft")
 
 

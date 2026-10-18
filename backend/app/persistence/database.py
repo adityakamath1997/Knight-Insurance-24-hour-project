@@ -65,16 +65,6 @@ class NarrativeRow(SQLModel, table=True):
     draft_stale: bool = False
 
 
-class MessageRow(SQLModel, table=True):
-    __tablename__ = "narrative_messages"
-
-    id: int | None = Field(default=None, primary_key=True)
-    submission_id: str = Field(foreign_key="submissions.id", index=True)
-    created_at: datetime = Field(default_factory=_now)
-    role: str
-    content: str
-
-
 def _configure_connection(connection: Any, _record: Any) -> None:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")

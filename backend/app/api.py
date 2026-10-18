@@ -13,7 +13,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from app.agents.narrative import NarrativeService
 from app.domain.models import FieldName
@@ -46,12 +46,6 @@ class DraftRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     body: str
-
-
-class MessageRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-    message: str = Field(min_length=1)
 
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
@@ -180,15 +174,4 @@ def regenerate_narrative(
     review: ReviewDep, narrative: NarrativeDep, submission_id: str
 ) -> SubmissionDetail:
     narrative.generate(submission_id)
-    return review.get_submission(submission_id)
-
-
-@router.post("/{submission_id}/narrative/messages")
-def reply(
-    review: ReviewDep,
-    narrative: NarrativeDep,
-    submission_id: str,
-    request: MessageRequest,
-) -> SubmissionDetail:
-    narrative.reply(submission_id, request.message)
     return review.get_submission(submission_id)

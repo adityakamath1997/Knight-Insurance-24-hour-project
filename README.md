@@ -16,7 +16,7 @@ packet (pasted email and/or files)
        answer with evidence (source file, locator, excerpt)
   -> deterministic normalization and reconciliation (MISSING / KNOWN / CONFLICT / INVALID)
   -> deterministic rules R1-R5 and overall status (no LLM)
-  -> narrative agent: summary, draft email, reviewer chat (display only)
+  -> narrative agent: summary, draft email (display only)
   -> SQLite (WAL): packet, field states with evidence, rule snapshots, narrative
 ```
 
@@ -26,7 +26,7 @@ packet (pasted email and/or files)
 - Reviewer corrections are labelled overrides that keep the original value, state and evidence; rules rerun and a snapshot is stored.
 - Each submission is processed independently; nothing carries over between packets.
 
-HTTP API (all under `/submissions`): `POST /` (multipart `email_text` and `files`), `POST /stream` (same input, server-sent events), `GET /` (history list), `GET /{id}`, `PATCH /{id}/fields/{field}`, `PATCH /{id}/draft`, `POST /{id}/narrative/regenerate`, `POST /{id}/narrative/messages`, plus `GET /health`.
+HTTP API (all under `/submissions`): `POST /` (multipart `email_text` and `files`), `POST /stream` (same input, server-sent events), `GET /` (history list), `GET /{id}`, `PATCH /{id}/fields/{field}`, `PATCH /{id}/draft`, `POST /{id}/narrative/regenerate`, plus `GET /health`.
 
 ## Setup and run
 
@@ -75,7 +75,7 @@ uv run poe check    # ruff, then pytest
 uv run poe test     # pytest only
 ```
 
-Result: 254 passed. Tests use fake models and make no network calls. They cover missing information, source conflicts, unequal vehicle counts, the 150 vs 150.1 mile threshold, all three sample packets through the HTTP API, overrides, persistence across app instances, narrative failure and edits, and the input cases under Known limitations.
+Result: 251 passed. Tests use fake models and make no network calls. They cover missing information, source conflicts, unequal vehicle counts, the 150 vs 150.1 mile threshold, all three sample packets through the HTTP API, overrides, persistence across app instances, narrative failure and edits, and the input cases under Known limitations.
 
 Frontend (from `frontend/`): `npm run lint`. There is no frontend test suite.
 
@@ -87,7 +87,7 @@ Frontend (from `frontend/`): `npm run lint`. There is no frontend test suite.
 - Conflict detection between email and PDF with both values and evidence kept and no source preference.
 - Rules R1-R5 and overall status as in `rules.json`, each shown with its status, reason and the values or evidence used; conflicts and invalid values give UNKNOWN before any threshold test.
 - Labelled human overrides with the original value and evidence retained; rules rerun and a snapshot history is kept.
-- AI underwriter summary, editable draft broker email (marked stale after an override when edited), and reviewer chat.
+- AI underwriter summary and editable draft broker email (marked stale after an override when edited).
 - Model failures shown as states, never replaced by simulated output.
 - Submission text is treated as data, never as instructions.
 
@@ -117,7 +117,7 @@ Approximate time spent: 4-5 hours over the course of one day.
 - Normalization: blank or `Not provided` (case-insensitive) is missing; dates must be `YYYY-MM-DD`; states as code or full name; booleans only `Yes`/`No`/`true`/`false`; counts as whole numbers (`3.0` allowed); miles as plain numbers. Anything else (`about 150`, `Nov 1, 2026`, `11/01/2026`, `150 miles`) is INVALID rather than guessed, and a reviewer override resolves it. Numbers above 10^15 are INVALID. `business_name` is compared ignoring case only (`Acme LLC.` vs `Acme LLC` is a CONFLICT); `operations_description` also ignores a trailing period, since the sample email ends the sentence and the application does not.
 - `operations_description` is extracted and compared across sources but no rule uses it, as the field specification states.
 - Overrides are typed values; dates must be `YYYY-MM-DD`. `null` clears a value. Booleans for numeric fields, negative, infinite or oversized numbers are rejected with a 422. Reviewer overrides are the only way to resolve a conflict.
-- Narrative failures keep what was already shown (summary, draft) and record the failure; after a failed regenerate the earlier text may predate the latest overrides, so check the shown status. The reviewer chat message is saved even when the reply fails.
+- Narrative failures keep what was already shown (summary, draft) and record the failure; after a failed regenerate the earlier text may predate the latest overrides, so check the shown status.
 - No OCR: a PDF without selectable text is unreadable, so the affected fields are UNKNOWN with the file listed.
 - Local single-user use: no authentication, CORS fixed to `http://localhost:3000`, SQLite file under `backend/data/` (git-ignored), no deletion of stored submissions.
 - `LLM_MODEL` is needed for extraction and narrative; without it those parts report failure (see LLM configuration).
